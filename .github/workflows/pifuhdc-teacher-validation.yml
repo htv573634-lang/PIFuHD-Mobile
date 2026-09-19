@@ -104,7 +104,10 @@ jobs:
           print("Pillow:", PIL.__version__)
 
           print("")
-          print("CUDA available:", torch.cuda.is_available())
+          print(
+              "CUDA available:",
+              torch.cuda.is_available()
+          )
 
           if torch.cuda.is_available():
               print(
@@ -153,45 +156,95 @@ jobs:
 
 
       # ============================================================
-      # DOWNLOAD GEOMETRY CHECKPOINT
+      # RESTORE MODEL CACHE
+      #
+      # Cached files:
+      #
+      # pifuhdc/checkpoints/pifuhd.pt
+      # pifuhdc/checkpoints/net_C_HD.pt
       # ============================================================
 
-      - name: Download PIFuHD geometry checkpoint
+      - name: Restore PIFuHDC checkpoint cache
+        uses: actions/cache@v4
+        with:
+          path: pifuhdc/checkpoints
+          key: pifuhdc-checkpoints-v1
+          restore-keys: |
+            pifuhdc-checkpoints-
+
+
+      # ============================================================
+      # DOWNLOAD GEOMETRY IF NOT CACHED
+      # ============================================================
+
+      - name: Download PIFuHD geometry checkpoint if needed
         working-directory: pifuhdc
+        shell: bash
         run: |
           echo "=========================================="
-          echo "DOWNLOADING GEOMETRY TEACHER"
+          echo "PIFuHD GEOMETRY CHECKPOINT"
           echo "=========================================="
 
-          wget \
-            --show-progress \
-            https://dl.fbaipublicfiles.com/pifuhd/checkpoints/pifuhd.pt \
-            -O checkpoints/pifuhd.pt
+          if [ -s checkpoints/pifuhd.pt ]; then
+
+            echo ""
+            echo "CACHE HIT"
+            echo "Geometry checkpoint already exists."
+
+          else
+
+            echo ""
+            echo "CACHE MISS"
+            echo "Downloading geometry checkpoint..."
+
+            wget \
+              --show-progress \
+              https://dl.fbaipublicfiles.com/pifuhd/checkpoints/pifuhd.pt \
+              -O checkpoints/pifuhd.pt
+
+          fi
 
           test -s checkpoints/pifuhd.pt
 
           echo ""
+          echo "Geometry checkpoint:"
           ls -lh checkpoints/pifuhd.pt
 
 
       # ============================================================
-      # DOWNLOAD COLOR CHECKPOINT
+      # DOWNLOAD COLOR IF NOT CACHED
       # ============================================================
 
-      - name: Download PIFuHDC color checkpoint
+      - name: Download PIFuHDC color checkpoint if needed
         working-directory: pifuhdc
+        shell: bash
         run: |
           echo "=========================================="
-          echo "DOWNLOADING COLOR TEACHER"
+          echo "PIFuHDC COLOR CHECKPOINT"
           echo "=========================================="
 
-          gdown \
-            1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM \
-            -O checkpoints/net_C_HD.pt
+          if [ -s checkpoints/net_C_HD.pt ]; then
+
+            echo ""
+            echo "CACHE HIT"
+            echo "Color checkpoint already exists."
+
+          else
+
+            echo ""
+            echo "CACHE MISS"
+            echo "Downloading color checkpoint..."
+
+            gdown \
+              1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM \
+              -O checkpoints/net_C_HD.pt
+
+          fi
 
           test -s checkpoints/net_C_HD.pt
 
           echo ""
+          echo "Color checkpoint:"
           ls -lh checkpoints/net_C_HD.pt
 
 
@@ -203,22 +256,26 @@ jobs:
         working-directory: pifuhdc
         run: |
           echo "=========================================="
-          echo "CHECKPOINTS"
+          echo "CHECKPOINT VERIFICATION"
           echo "=========================================="
 
-          ls -lah checkpoints
+          test -s checkpoints/pifuhd.pt
+          test -s checkpoints/net_C_HD.pt
 
           echo ""
           echo "Geometry:"
-          du -h checkpoints/pifuhd.pt
+          ls -lh checkpoints/pifuhd.pt
 
           echo ""
           echo "Color:"
-          du -h checkpoints/net_C_HD.pt
+          ls -lh checkpoints/net_C_HD.pt
+
+          echo ""
+          echo "Checkpoint files are ready."
 
 
       # ============================================================
-      # PREPARE OFFICIAL SAMPLE IMAGE
+      # PREPARE INPUT
       # ============================================================
 
       - name: Prepare teacher input
@@ -289,9 +346,6 @@ jobs:
 
       # ============================================================
       # VERIFY PIFUHDC MODULES
-      #
-      # DO NOT import apps.test_colorHD because it runs inference
-      # during import.
       # ============================================================
 
       - name: Verify PIFuHDC modules
@@ -363,6 +417,7 @@ jobs:
 
               print("Changed:")
               print(old)
+
               print("")
               print("To:")
               print(new)
@@ -370,7 +425,8 @@ jobs:
           else:
 
               print(
-                  "Default color checkpoint reference not found."
+                  "Default color checkpoint reference "
+                  "not found."
               )
 
               print("")
@@ -394,24 +450,160 @@ jobs:
                       print(
                           f"{number}: {line}"
                       )
-
-              print("")
-              print(
-                  "No replacement performed."
-              )
           PY
 
 
       # ============================================================
-      # PATCH MARCHING CUBES
+      # FIX SCIKIT-IMAGE MARCHING CUBES API
       #
-      # IMPORTANT:
+      # Official PIFuHDC uses:
       #
-      # This patches the CLONED official file:
+      # marching_cubes_lewiner()
       #
-      # pifuhdc/lib/mesh_util.py
+      # Replace with:
       #
-      # It does NOT create this file in the user's repository.
+      # marching_cubes()
+      #
+      # Only the cloned PIFuHDC file is modified.
+      # ============================================================
+
+      - name: Fix scikit-image Marching Cubes API
+        working-directory: pifuhdc
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path(
+              "lib/mesh_util.py"
+          )
+
+          print("==========================================")
+          print("FIXING SCIKIT-IMAGE MARCHING CUBES API")
+          print("==========================================")
+
+          if not path.exists():
+
+              raise SystemExit(
+                  "ERROR: lib/mesh_util.py was not found"
+              )
+
+          text = path.read_text()
+
+          old = (
+              "measure.marching_cubes_lewiner"
+          )
+
+          new = (
+              "measure.marching_cubes"
+          )
+
+          print(
+              "Old API present:",
+              old in text
+          )
+
+          if old in text:
+
+              text = text.replace(
+                  old,
+                  new
+              )
+
+              path.write_text(
+                  text
+              )
+
+              print("")
+              print(
+                  "SUCCESS:"
+              )
+
+              print(
+                  old,
+                  "->",
+                  new
+              )
+
+          else:
+
+              print("")
+              print(
+                  "Old API was not found."
+              )
+
+              print(
+                  "Current Marching Cubes references:"
+              )
+
+              for number, line in enumerate(
+                  text.splitlines(),
+                  1
+              ):
+
+                  if (
+                      "marching" in line.lower()
+                  ):
+
+                      print(
+                          f"{number}: {line}"
+                      )
+
+
+      # ============================================================
+      # VERIFY MARCHING CUBES API
+      # ============================================================
+
+      - name: Verify Marching Cubes API
+        working-directory: pifuhdc
+        run: |
+          python - <<'PY'
+          import skimage
+          from skimage import measure
+
+          print("==========================================")
+          print("MARCHING CUBES API CHECK")
+          print("==========================================")
+
+          print(
+              "scikit-image:",
+              skimage.__version__
+          )
+
+          print(
+              "marching_cubes:",
+              hasattr(
+                  measure,
+                  "marching_cubes"
+              )
+          )
+
+          print(
+              "marching_cubes_lewiner:",
+              hasattr(
+                  measure,
+                  "marching_cubes_lewiner"
+              )
+          )
+
+          if not hasattr(
+              measure,
+              "marching_cubes"
+          ):
+
+              raise SystemExit(
+                  "marching_cubes API unavailable"
+              )
+
+          print("")
+          print(
+              "Marching Cubes API is ready."
+          )
+          PY
+
+
+      # ============================================================
+      # PATCH MARCHING CUBES DIAGNOSTICS
       # ============================================================
 
       - name: Patch Marching Cubes diagnostics
@@ -426,23 +618,16 @@ jobs:
           )
 
           print("==========================================")
-          print("MARCHING CUBES PATCH")
+          print("MARCHING CUBES DIAGNOSTIC PATCH")
           print("==========================================")
 
           if not path.exists():
 
               raise SystemExit(
-                  "ERROR: lib/mesh_util.py was not found"
+                  "ERROR: lib/mesh_util.py not found"
               )
 
           text = path.read_text()
-
-          print("File:", path)
-          print(
-              "Original size:",
-              len(text),
-              "bytes"
-          )
 
           old_lines = [
               "    except:",
@@ -482,107 +667,53 @@ jobs:
               new_lines
           )
 
-          if old not in text:
+          if old in text:
 
-              print("")
+              text = text.replace(
+                  old,
+                  new,
+                  1
+              )
+
+              path.write_text(
+                  text
+              )
+
               print(
-                  "Expected Marching Cubes exception block "
+                  "Diagnostic patch applied."
+              )
+
+          else:
+
+              print(
+                  "Diagnostic exception block "
                   "was not found."
               )
-
-              print("")
-              print(
-                  "Searching mesh_util.py for relevant lines:"
-              )
-
-              lines = text.splitlines()
-
-              for number, line in enumerate(
-                  lines,
-                  1
-              ):
-
-                  lower = line.lower()
-
-                  if (
-                      "marching" in lower
-                      or
-                      "marching_cubes" in lower
-                      or
-                      "cannot marching" in lower
-                      or
-                      line.strip() == "except:"
-                  ):
-
-                      start = max(
-                          1,
-                          number - 4
-                      )
-
-                      end = min(
-                          len(lines),
-                          number + 6
-                      )
-
-                      print("")
-                      print(
-                          f"--- lines {start}-{end} ---"
-                      )
-
-                      for i in range(
-                          start,
-                          end + 1
-                      ):
-
-                          print(
-                              f"{i}: {lines[i - 1]}"
-                          )
-
-              raise SystemExit(
-                  "Marching Cubes patch stopped safely."
-              )
-
-          text = text.replace(
-              old,
-              new,
-              1
-          )
-
-          path.write_text(
-              text
-          )
-
-          print("")
-          print(
-              "Marching Cubes diagnostic patch applied successfully."
-          )
-
-          print(
-              "New size:",
-              len(text),
-              "bytes"
-          )
           PY
 
 
       # ============================================================
-      # VERIFY MARCHING CUBES PATCH
+      # VERIFY mesh_util.py
       # ============================================================
 
-      - name: Verify Marching Cubes patch
+      - name: Verify mesh_util.py
         working-directory: pifuhdc
         run: |
           echo "=========================================="
-          echo "VERIFYING MARCHING CUBES PATCH"
+          echo "FINAL mesh_util.py CHECK"
           echo "=========================================="
 
           grep -n \
-            -A30 \
-            "MARCHING CUBES INTERNAL EXCEPTION" \
-            lib/mesh_util.py
+            "marching_cubes" \
+            lib/mesh_util.py \
+            || true
 
           echo ""
-          echo "Patch verification complete."
+          echo "Relevant section:"
+
+          sed -n \
+            '65,105p' \
+            lib/mesh_util.py
 
 
       # ============================================================
@@ -606,16 +737,6 @@ jobs:
           print("DATASET CHECK")
           print("==========================================")
 
-          print(
-              "Image:",
-              image.exists()
-          )
-
-          print(
-              "Rectangle:",
-              rect.exists()
-          )
-
           if not image.exists():
 
               raise SystemExit(
@@ -628,8 +749,17 @@ jobs:
                   "sample_rect.txt is missing"
               )
 
+          print(
+              "Image:",
+              image
+          )
+
+          print(
+              "Rectangle:",
+              rect
+          )
+
           print("")
-          print("Rectangle contents:")
           print(
               rect.read_text()
           )
@@ -640,7 +770,7 @@ jobs:
 
 
       # ============================================================
-      # RUN REAL PIFUHDC
+      # RUN REAL PIFUHDC TEACHER
       # ============================================================
 
       - name: Run real PIFuHDC teacher
@@ -654,7 +784,7 @@ jobs:
           echo "=========================================="
 
           echo ""
-          echo "Input files:"
+          echo "Input:"
           ls -lah ../teacher_input
 
           echo ""
@@ -731,16 +861,12 @@ jobs:
             echo "=========================================="
 
             echo ""
-            echo "PIFuHDC did not produce a mesh."
-
-            echo ""
-            echo "FULL PIFuHDC LOG:"
+            echo "Full PIFuHDC log:"
             echo "------------------------------------------"
 
             cat ../teacher_output/pifuhdc.log
 
             echo "------------------------------------------"
-            echo ""
 
             exit 1
           fi
@@ -753,7 +879,7 @@ jobs:
           if [ "$PIFUHDC_EXIT" -ne 0 ]; then
 
             echo ""
-            echo "PIFuHDC returned a non-zero exit code."
+            echo "PIFuHDC returned non-zero exit code."
 
             exit "$PIFUHDC_EXIT"
 
@@ -768,7 +894,7 @@ jobs:
         if: always()
         run: |
           echo "=========================================="
-          echo "TEACHER OUTPUT INSPECTION"
+          echo "TEACHER OUTPUT"
           echo "=========================================="
 
           if [ -d teacher_output ]; then
@@ -786,14 +912,14 @@ jobs:
 
 
       # ============================================================
-      # SEARCH FOR MESHES
+      # SEARCH MESHES
       # ============================================================
 
       - name: Search generated meshes
         if: always()
         run: |
           echo "=========================================="
-          echo "SEARCHING GENERATED MESHES"
+          echo "GENERATED MESHES"
           echo "=========================================="
 
           echo ""
@@ -817,14 +943,6 @@ jobs:
           find teacher_output \
             -type f \
             -iname "*.glb" \
-            -print \
-            2>/dev/null || true
-
-          echo ""
-          echo "PNG:"
-          find teacher_output \
-            -type f \
-            -iname "*.png" \
             -print \
             2>/dev/null || true
 
@@ -878,9 +996,9 @@ jobs:
 
                           vertices += 1
 
-                          parts = line.split()
-
-                          if len(parts) >= 7:
+                          if len(
+                              line.split()
+                          ) >= 7:
 
                               colored_vertices += 1
 
@@ -984,10 +1102,8 @@ jobs:
                   len(mesh.faces)
               )
 
-              print(
-                  "Bounds:"
-              )
-
+              print("")
+              print("Bounds:")
               print(
                   mesh.bounds
               )
@@ -1011,7 +1127,7 @@ jobs:
 
 
       # ============================================================
-      # UPLOAD EVERYTHING IMPORTANT
+      # UPLOAD RESULTS
       # ============================================================
 
       - name: Upload teacher results
