@@ -1,0 +1,958 @@
+name: PIFuHDC Multi-View 3D Reconstruction
+
+on:
+  workflow_dispatch:
+
+jobs:
+  multiview-reconstruction:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ============================================================
+      # PYTHON
+      # ============================================================
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      # ============================================================
+      # SYSTEM PACKAGES
+      # ============================================================
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            git \
+            wget \
+            curl \
+            build-essential \
+            libgl1 \
+            libglib2.0-0 \
+            libsm6 \
+            libxext6 \
+            libxrender1
+
+      # ============================================================
+      # PYTHON PACKAGES
+      # ============================================================
+
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
+
+          pip install \
+            numpy==1.23.5 \
+            scipy==1.10.1 \
+            pillow==9.5.0 \
+            scikit-image==0.19.3 \
+            opencv-python-headless==4.8.1.78 \
+            tqdm==4.66.1 \
+            matplotlib==3.7.5 \
+            trimesh==3.23.5 \
+            gdown
+
+          pip install \
+            torch==2.1.2 \
+            torchvision==0.16.2
+
+      # ============================================================
+      # ENVIRONMENT CHECK
+      # ============================================================
+
+      - name: Check environment
+        run: |
+          python - <<'PY'
+          import sys
+          import torch
+          import torchvision
+          import numpy
+          import scipy
+          import skimage
+          import cv2
+          import trimesh
+
+          print("Python:", sys.version)
+          print("PyTorch:", torch.__version__)
+          print("Torchvision:", torchvision.__version__)
+          print("NumPy:", numpy.__version__)
+          print("SciPy:", scipy.__version__)
+          print("scikit-image:", skimage.__version__)
+          print("OpenCV:", cv2.__version__)
+          print("Trimesh:", trimesh.__version__)
+          print("CUDA:", torch.cuda.is_available())
+          PY
+
+      # ============================================================
+      # CLONE PIFuHDC
+      # ============================================================
+
+      - name: Clone PIFuHDC
+        run: |
+          rm -rf pifuhdc
+
+          git clone \
+            --depth 1 \
+            https://github.com/xiahongchi/PIFuHDC.git \
+            pifuhdc
+
+      # ============================================================
+      # CHECKPOINT CACHE
+      # ============================================================
+
+      - name: Restore PIFuHDC checkpoint cache
+        uses: actions/cache@v4
+        with:
+          path: pifuhdc/checkpoints
+          key: pifuhdc-checkpoints-v1
+          restore-keys: |
+            pifuhdc-checkpoints-
+
+      # ============================================================
+      # CHECKPOINTS
+      # ============================================================
+
+      - name: Prepare checkpoints
+        working-directory: pifuhdc
+        run: |
+          mkdir -p checkpoints
+
+      - name: Download PIFuHD geometry if needed
+        working-directory: pifuhdc
+        shell: bash
+        run: |
+          if [ -s checkpoints/pifuhd.pt ]; then
+            echo "Geometry checkpoint found in cache."
+          else
+            echo "Downloading PIFuHD geometry..."
+
+            wget \
+              --show-progress \
+              https://dl.fbaipublicfiles.com/pifuhd/checkpoints/pifuhd.pt \
+              -O checkpoints/pifuhd.pt
+          fi
+
+          test -s checkpoints/pifuhd.pt
+
+          ls -lh checkpoints/pifuhd.pt
+
+      - name: Download PIFuHDC color checkpoint if needed
+        working-directory: pifuhdc
+        shell: bash
+        run: |
+          if [ -s checkpoints/net_C_HD.pt ]; then
+            echo "Color checkpoint found in cache."
+          else
+            echo "Downloading PIFuHDC color checkpoint..."
+
+            gdown \
+              1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM \
+              -O checkpoints/net_C_HD.pt
+          fi
+
+          test -s checkpoints/net_C_HD.pt
+
+          ls -lh checkpoints/net_C_HD.pt
+
+      - name: Verify checkpoints
+        working-directory: pifuhdc
+        run: |
+          test -s checkpoints/pifuhd.pt
+          test -s checkpoints/net_C_HD.pt
+
+          echo "=========================================="
+          echo "CHECKPOINTS READY"
+          echo "=========================================="
+
+          ls -lh checkpoints/pifuhd.pt
+          ls -lh checkpoints/net_C_HD.pt
+
+      # ============================================================
+      # PATCH PIFuHDC
+      # ============================================================
+
+      - name: Configure PIFuHDC color checkpoint
+        working-directory: pifuhdc
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("apps/recon.py")
+          text = path.read_text()
+
+          old = "checkpoints/net_C_choice2.pt"
+          new = "checkpoints/net_C_HD.pt"
+
+          if old in text:
+              text = text.replace(old, new)
+              path.write_text(text)
+              print("Color checkpoint path fixed.")
+          else:
+              print("Color checkpoint path already correct.")
+          PY
+
+      - name: Fix Marching Cubes API
+        working-directory: pifuhdc
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("lib/mesh_util.py")
+
+          if not path.exists():
+              raise SystemExit("lib/mesh_util.py not found.")
+
+          text = path.read_text()
+
+          old = "measure.marching_cubes_lewiner"
+          new = "measure.marching_cubes"
+
+          if old in text:
+              text = text.replace(old, new)
+              path.write_text(text)
+              print("Marching Cubes API fixed.")
+          else:
+              print("Marching Cubes API already fixed.")
+          PY
+
+      # ============================================================
+      # VERIFY INPUT DATA
+      # ============================================================
+
+      - name: Verify multi-view input
+        shell: bash
+        run: |
+          echo "=========================================="
+          echo "MULTI-VIEW INPUT"
+          echo "=========================================="
+
+          mkdir -p multiview_input
+          mkdir -p multiview_output
+
+          find dataset/input \
+            -maxdepth 1 \
+            -type f \
+            \( \
+              -iname "*.jpg" \
+              -o -iname "*.jpeg" \
+              -o -iname "*.png" \
+            \) \
+            -printf "%f\n" \
+            | sort \
+            > multiview_input/images.txt
+
+          COUNT=$(wc -l < multiview_input/images.txt)
+
+          echo "Image count: $COUNT"
+
+          cat multiview_input/images.txt
+
+          if [ "$COUNT" -lt 2 ]; then
+            echo "ERROR: Need at least 2 images."
+            exit 1
+          fi
+
+      # ============================================================
+      # PREPARE EACH IMAGE
+      # ============================================================
+
+      - name: Prepare PIFuHDC inputs
+        shell: bash
+        run: |
+          rm -rf teacher_input
+          mkdir -p teacher_input
+
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+
+          source = Path("dataset/input")
+          target = Path("teacher_input")
+
+          images = sorted([
+              p for p in source.iterdir()
+              if p.is_file()
+              and p.suffix.lower() in {
+                  ".jpg",
+                  ".jpeg",
+                  ".png"
+              }
+          ])
+
+          print("Preparing", len(images), "images.")
+
+          for index, image_path in enumerate(images, start=1):
+
+              output_name = f"view_{index:03d}.jpg"
+              output_image = target / output_name
+
+              image = Image.open(image_path).convert("RGB")
+
+              image.save(
+                  output_image,
+                  quality=95
+              )
+
+              width, height = image.size
+
+              rect = target / f"view_{index:03d}_rect.txt"
+
+              rect.write_text(
+                  f"0 0 {width} {height}\n"
+              )
+
+              print(
+                  index,
+                  image_path.name,
+                  "->",
+                  output_name,
+                  width,
+                  "x",
+                  height
+              )
+
+          print("")
+          print("Prepared files:")
+
+          for p in sorted(target.iterdir()):
+              print(p)
+
+          PY
+
+      # ============================================================
+      # VERIFY PIFuHDC
+      # ============================================================
+
+      - name: Verify PIFuHDC modules
+        working-directory: pifuhdc
+        run: |
+          python - <<'PY'
+          import sys
+
+          sys.path.insert(0, ".")
+
+          import lib
+          import lib.mesh_util
+          import lib.options
+          import apps
+          import apps.recon
+
+          print("PIFuHDC imports OK.")
+          PY
+
+      - name: Verify Marching Cubes
+        working-directory: pifuhdc
+        run: |
+          python - <<'PY'
+          from skimage import measure
+          import skimage
+
+          print("scikit-image:", skimage.__version__)
+
+          if not hasattr(measure, "marching_cubes"):
+              raise SystemExit(
+                  "marching_cubes API unavailable."
+              )
+
+          print("marching_cubes API: OK")
+          PY
+
+      # ============================================================
+      # RUN PIFuHDC ON ALL VIEWS
+      # ============================================================
+
+      - name: Run PIFuHDC on all views
+        working-directory: pifuhdc
+        shell: bash
+        run: |
+          set -o pipefail
+
+          mkdir -p ../multiview_output
+
+          echo "=========================================="
+          echo "RUNNING PIFuHDC MULTI-VIEW RECONSTRUCTION"
+          echo "=========================================="
+
+          mapfile -t IMAGES < <(
+            find ../teacher_input \
+              -maxdepth 1 \
+              -type f \
+              -name "*.jpg" \
+              -printf "%f\n" \
+              | sort
+          )
+
+          TOTAL=${#IMAGES[@]}
+
+          echo "Total views: $TOTAL"
+
+          if [ "$TOTAL" -lt 2 ]; then
+            echo "ERROR: Not enough views."
+            exit 1
+          fi
+
+          for ((i=0; i<TOTAL; i++)); do
+
+            IMAGE="${IMAGES[$i]}"
+            VIEW_INDEX=$((i + 1))
+
+            echo ""
+            echo "=========================================="
+            echo "VIEW $VIEW_INDEX / $TOTAL"
+            echo "IMAGE: $IMAGE"
+            echo "=========================================="
+
+            rm -rf ../multiview_output/current
+
+            mkdir -p ../multiview_output/current
+
+            python -m apps.test_colorHD \
+              --input_path ../teacher_input \
+              --out_path ../multiview_output/current \
+              --ckpt_path ./checkpoints/pifuhd.pt \
+              --ckpt_path_Color ./checkpoints/net_C_HD.pt \
+              --resolution 256 \
+              --use_rect \
+              2>&1 \
+              | tee "../multiview_output/view_${VIEW_INDEX}.log"
+
+            OBJ=$(find \
+              ../multiview_output/current \
+              -type f \
+              -iname "result_${IMAGE%.jpg}_256.obj" \
+              -print \
+              | head -n 1)
+
+            if [ -z "$OBJ" ]; then
+
+              echo "Expected OBJ not found."
+
+              find \
+                ../multiview_output/current \
+                -type f \
+                -print
+
+              exit 1
+            fi
+
+            DEST=""
+
+            mkdir -p \
+              "../multiview_output/views/view_${VIEW_INDEX}"
+
+            DEST="../multiview_output/views/view_${VIEW_INDEX}/mesh.obj"
+
+            cp "$OBJ" "$DEST"
+
+            PNG=$(find \
+              ../multiview_output/current \
+              -type f \
+              -iname "result_${IMAGE%.jpg}_256.png" \
+              -print \
+              | head -n 1)
+
+            if [ -n "$PNG" ]; then
+              cp "$PNG" \
+                "../multiview_output/views/view_${VIEW_INDEX}/preview.png"
+            fi
+
+            echo "Saved:"
+            echo "$DEST"
+
+          done
+
+          echo ""
+          echo "=========================================="
+          echo "ALL PIFuHDC VIEWS COMPLETE"
+          echo "=========================================="
+
+          find \
+            ../multiview_output/views \
+            -type f \
+            -printf "%p %s bytes\n"
+
+      # ============================================================
+      # MULTI-VIEW ALIGNMENT + FUSION
+      # ============================================================
+
+      - name: Build multi-view fused 3D model
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import numpy as np
+          import trimesh
+
+          root = Path("multiview_output/views")
+
+          view_dirs = sorted([
+              p for p in root.iterdir()
+              if p.is_dir()
+          ])
+
+          print("Views found:", len(view_dirs))
+
+          if len(view_dirs) < 2:
+              raise SystemExit(
+                  "At least two reconstructed views are required."
+              )
+
+          meshes = []
+
+          for view_dir in view_dirs:
+
+              obj = view_dir / "mesh.obj"
+
+              if not obj.exists():
+                  print("Skipping missing:", obj)
+                  continue
+
+              print("")
+              print("Loading:", obj)
+
+              mesh = trimesh.load(
+                  obj,
+                  force="mesh",
+                  process=False
+              )
+
+              if not isinstance(mesh, trimesh.Trimesh):
+                  raise SystemExit(
+                      f"Could not load mesh: {obj}"
+                  )
+
+              if len(mesh.vertices) == 0:
+                  raise SystemExit(
+                      f"Mesh has no vertices: {obj}"
+                  )
+
+              if len(mesh.faces) == 0:
+                  raise SystemExit(
+                      f"Mesh has no faces: {obj}"
+                  )
+
+              print(
+                  "Vertices:",
+                  len(mesh.vertices)
+              )
+
+              print(
+                  "Faces:",
+                  len(mesh.faces)
+              )
+
+              meshes.append(mesh)
+
+          if len(meshes) < 2:
+              raise SystemExit(
+                  "Not enough valid meshes."
+              )
+
+          # --------------------------------------------------------
+          # NORMALIZE EACH RECONSTRUCTION
+          # --------------------------------------------------------
+
+          def normalize(mesh):
+
+              vertices = np.asarray(
+                  mesh.vertices,
+                  dtype=np.float64
+              )
+
+              center = (
+                  vertices.min(axis=0)
+                  +
+                  vertices.max(axis=0)
+              ) * 0.5
+
+              vertices = vertices - center
+
+              extent = np.ptp(
+                  vertices,
+                  axis=0
+              )
+
+              scale = float(
+                  np.max(extent)
+              )
+
+              if scale <= 1e-8:
+                  raise ValueError(
+                      "Degenerate mesh."
+                  )
+
+              vertices /= scale
+
+              mesh.vertices = vertices
+
+              return mesh
+
+          meshes = [
+              normalize(mesh)
+              for mesh in meshes
+          ]
+
+          # --------------------------------------------------------
+          # INITIAL MULTI-VIEW ROTATION
+          #
+          # The uploaded files represent an ordered turntable.
+          # We therefore distribute the views around 360 degrees.
+          #
+          # This is an INITIALIZATION only.
+          # ICP below refines the alignment.
+          # --------------------------------------------------------
+
+          total = len(meshes)
+
+          for i, mesh in enumerate(meshes):
+
+              angle = (
+                  2.0 *
+                  np.pi *
+                  i /
+                  total
+              )
+
+              c = np.cos(angle)
+              s = np.sin(angle)
+
+              rotation = np.array([
+                  [ c, 0.0, -s, 0.0],
+                  [0.0, 1.0, 0.0, 0.0],
+                  [ s, 0.0,  c, 0.0],
+                  [0.0, 0.0, 0.0, 1.0]
+              ])
+
+              mesh.apply_transform(rotation)
+
+          # --------------------------------------------------------
+          # ICP ALIGNMENT
+          # --------------------------------------------------------
+
+          reference = meshes[0].copy()
+
+          print("")
+          print("==========================================")
+          print("REFERENCE MESH")
+          print("==========================================")
+
+          print(
+              "Reference vertices:",
+              len(reference.vertices)
+          )
+
+          aligned = [
+              reference
+          ]
+
+          for index, source in enumerate(
+              meshes[1:],
+              start=2
+          ):
+
+              print("")
+              print(
+                  "Aligning view",
+                  index,
+                  "of",
+                  total
+              )
+
+              try:
+
+                  matrix, cost = trimesh.registration.icp(
+                      source,
+                      reference,
+                      scale=False,
+                      reflection=False,
+                      max_iterations=50,
+                      threshold=1e-5
+                  )
+
+                  print(
+                      "ICP cost:",
+                      cost
+                  )
+
+                  source.apply_transform(matrix)
+
+                  aligned.append(source)
+
+              except Exception as exc:
+
+                  print(
+                      "ICP failed for view",
+                      index,
+                      ":",
+                      exc
+                  )
+
+                  print(
+                      "Keeping initial alignment."
+                  )
+
+                  aligned.append(source)
+
+          # --------------------------------------------------------
+          # MERGE GEOMETRY
+          # --------------------------------------------------------
+
+          print("")
+          print("==========================================")
+          print("MERGING ALIGNED VIEWS")
+          print("==========================================")
+
+          combined = trimesh.util.concatenate(
+              aligned
+          )
+
+          print(
+              "Combined vertices:",
+              len(combined.vertices)
+          )
+
+          print(
+              "Combined faces:",
+              len(combined.faces)
+          )
+
+          # --------------------------------------------------------
+          # REMOVE DUPLICATE / INTERNAL GEOMETRY
+          #
+          # We do NOT aggressively boolean-union the meshes here.
+          # PIFuHDC meshes contain detailed surfaces and a destructive
+          # boolean operation could remove useful clothing detail.
+          # --------------------------------------------------------
+
+          combined.remove_duplicate_faces()
+          combined.remove_degenerate_faces()
+          combined.remove_unreferenced_vertices()
+
+          print("")
+          print(
+              "After cleanup vertices:",
+              len(combined.vertices)
+          )
+
+          print(
+              "After cleanup faces:",
+              len(combined.faces)
+          )
+
+          # --------------------------------------------------------
+          # EXPORT INTERMEDIATE FUSED MESH
+          # --------------------------------------------------------
+
+          output_dir = Path(
+              "multiview_output/fused"
+          )
+
+          output_dir.mkdir(
+              parents=True,
+              exist_ok=True
+          )
+
+          fused_obj = (
+              output_dir /
+              "person_multiview_fused.obj"
+          )
+
+          combined.export(
+              fused_obj
+          )
+
+          print("")
+          print(
+              "Fused OBJ:",
+              fused_obj
+          )
+
+          # --------------------------------------------------------
+          # GLB
+          # --------------------------------------------------------
+
+          fused_glb = (
+              output_dir /
+              "person_multiview_fused.glb"
+          )
+
+          combined.export(
+              fused_glb,
+              file_type="glb"
+          )
+
+          print(
+              "Fused GLB:",
+              fused_glb
+          )
+
+          print(
+              "GLB size:",
+              fused_glb.stat().st_size,
+              "bytes"
+          )
+
+          # --------------------------------------------------------
+          # SAVE ALIGNMENT METADATA
+          # --------------------------------------------------------
+
+          metadata = output_dir / "alignment.txt"
+
+          metadata.write_text(
+              "\n".join([
+                  "PIFuHDC Multi-View Reconstruction",
+                  f"views={len(aligned)}",
+                  f"vertices={len(combined.vertices)}",
+                  f"faces={len(combined.faces)}",
+                  "initialization=ordered_360_degree_rotation",
+                  "refinement=ICP",
+                  "note=experimental_without_explicit_camera_poses"
+              ])
+              + "\n"
+          )
+
+          print(
+              "Metadata:",
+              metadata
+          )
+
+          PY
+
+      # ============================================================
+      # VALIDATE FUSED RESULT
+      # ============================================================
+
+      - name: Validate fused 3D result
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import trimesh
+
+          root = Path(
+              "multiview_output/fused"
+          )
+
+          obj = root / "person_multiview_fused.obj"
+          glb = root / "person_multiview_fused.glb"
+
+          print("==========================================")
+          print("FUSED MODEL VALIDATION")
+          print("==========================================")
+
+          if not obj.exists():
+              raise SystemExit(
+                  "Fused OBJ missing."
+              )
+
+          if not glb.exists():
+              raise SystemExit(
+                  "Fused GLB missing."
+              )
+
+          mesh = trimesh.load(
+              obj,
+              force="mesh",
+              process=False
+          )
+
+          if not isinstance(
+              mesh,
+              trimesh.Trimesh
+          ):
+              raise SystemExit(
+                  "Fused OBJ is not a mesh."
+              )
+
+          print(
+              "OBJ vertices:",
+              len(mesh.vertices)
+          )
+
+          print(
+              "OBJ faces:",
+              len(mesh.faces)
+          )
+
+          if len(mesh.vertices) == 0:
+              raise SystemExit(
+                  "Fused OBJ contains no vertices."
+              )
+
+          if len(mesh.faces) == 0:
+              raise SystemExit(
+                  "Fused OBJ contains no faces."
+              )
+
+          scene = trimesh.load(
+              glb,
+              force="scene"
+          )
+
+          print(
+              "GLB geometry:",
+              len(scene.geometry)
+          )
+
+          if len(scene.geometry) == 0:
+              raise SystemExit(
+                  "Fused GLB contains no geometry."
+              )
+
+          print("")
+          print("FUSED MODEL VALIDATION PASSED.")
+
+          PY
+
+      # ============================================================
+      # SHOW RESULTS
+      # ============================================================
+
+      - name: Show final results
+        if: always()
+        run: |
+          echo "=========================================="
+          echo "FINAL MULTI-VIEW RESULTS"
+          echo "=========================================="
+
+          find \
+            multiview_output \
+            -type f \
+            -printf "%p %s bytes\n" \
+            2>/dev/null \
+            | sort
+
+          echo ""
+          echo "FUSED MODEL:"
+
+          find \
+            multiview_output/fused \
+            -type f \
+            -print \
+            2>/dev/null \
+            || true
+
+      # ============================================================
+      # ARTIFACT
+      # ============================================================
+
+      - name: Upload multi-view reconstruction
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pifuhdc-multiview-3d
+          path: |
+            multiview_input/
+            multiview_output/
+            teacher_input/
+          if-no-files-found: warn
+          retention-days: 7
