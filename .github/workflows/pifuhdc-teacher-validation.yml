@@ -72,7 +72,7 @@ jobs:
           echo "DOWNLOADING PIFuHD GEOMETRY TEACHER"
           echo "=========================================="
 
-          wget -q --show-progress \
+          wget \
             "https://dl.fbaipublicfiles.com/pifuhd/checkpoints/pifuhd.pt" \
             -O checkpoints/pifuhd.pt
 
@@ -80,14 +80,15 @@ jobs:
 
           SIZE=$(stat -c%s checkpoints/pifuhd.pt)
 
-          echo "Downloaded bytes: $SIZE"
+          echo "PIFuHD size: $SIZE bytes"
 
           if [ "$SIZE" -lt 1000000000 ]; then
-            echo "ERROR: pifuhd.pt is unexpectedly small."
+            echo "ERROR: PIFuHD checkpoint is too small."
             exit 1
           fi
 
-          echo "PIFuHD checkpoint OK:"
+          echo "PIFuHD checkpoint downloaded successfully."
+
           ls -lh checkpoints/pifuhd.pt
 
       - name: Download PIFuHDC color teacher
@@ -99,55 +100,30 @@ jobs:
           echo "DOWNLOADING PIFuHDC COLOR TEACHER"
           echo "=========================================="
 
-          echo "Searching repository for the color checkpoint URL..."
+          gdown \
+            --id 1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM \
+            -O checkpoints/net_C_HD.pt
 
-          COLOR_URL=$(grep -RhoE \
-            'https?://[^"'\'' ]+net_C_HD[^"'\'' ]*' \
-            scripts README.md . \
-            2>/dev/null | head -n 1 || true)
+          test -f checkpoints/net_C_HD.pt
 
-          if [ -n "$COLOR_URL" ]; then
-            echo "Found color checkpoint URL."
-            echo "$COLOR_URL"
+          SIZE=$(stat -c%s checkpoints/net_C_HD.pt)
 
-            wget -q --show-progress \
-              "$COLOR_URL" \
-              -O checkpoints/net_C_HD.pt
-          fi
+          echo "Color checkpoint size: $SIZE bytes"
 
-          if [ ! -f checkpoints/net_C_HD.pt ]; then
-            echo "Repository did not expose the color URL directly."
-            echo "Looking for an existing downloaded color checkpoint."
-
-            find . -type f \
-              \( -name "net_C_HD.pt" -o -name "net_C_choice2.pt" \) \
-              -print
-          fi
-
-          if [ ! -f checkpoints/net_C_HD.pt ] && \
-             [ -f checkpoints/net_C_choice2.pt ]; then
-            cp checkpoints/net_C_choice2.pt checkpoints/net_C_HD.pt
-          fi
-
-          if [ ! -f checkpoints/net_C_HD.pt ]; then
-            echo
-            echo "ERROR: net_C_HD.pt was not downloaded."
-            echo
-            echo "Available checkpoint files:"
-            find . -type f -name "*.pt" -ls
-            echo
-            echo "The PIFuHD geometry checkpoint was downloaded correctly."
-            echo "Only the PIFuHDC color checkpoint is missing."
+          if [ "$SIZE" -lt 20000000 ]; then
+            echo "ERROR: Color checkpoint is unexpectedly small."
             exit 1
           fi
 
           cp checkpoints/net_C_HD.pt checkpoints/net_C_choice2.pt
 
           echo
-          echo "Color checkpoint:"
-          ls -lh checkpoints/net_C_HD.pt
+          echo "PIFuHDC color checkpoint downloaded successfully."
 
-      - name: Verify checkpoints
+          ls -lh checkpoints/net_C_HD.pt
+          ls -lh checkpoints/net_C_choice2.pt
+
+      - name: Verify teacher checkpoints
         working-directory: pifuhdc
         run: |
           set -e
@@ -169,7 +145,7 @@ jobs:
           ls -lh checkpoints/net_C_HD.pt
 
           echo
-          echo "Compatibility copy:"
+          echo "Color compatibility copy:"
           ls -lh checkpoints/net_C_choice2.pt
 
           echo
@@ -183,7 +159,7 @@ jobs:
         run: |
           set -e
 
-          wget -q --show-progress \
+          wget \
             "https://raw.githubusercontent.com/xiahongchi/PIFuHDC/main/sample_images/cxk.jpg" \
             -O teacher_input/sample.jpg
 
@@ -195,8 +171,10 @@ jobs:
         run: |
           set -e
 
-          python -c "from PIL import Image; im=Image.open('teacher_input/sample.jpg'); w,h=im.size; open('teacher_input/sample_rect.txt','w').write('0 0 %d %d\n' % (w,h)); print('Image size:',w,h); print('Rectangle:',0,0,w,h)"
+          python -c "from PIL import Image; im=Image.open('teacher_input/sample.jpg'); w,h=im.size; open('teacher_input/sample_rect.txt','w').write('0 0 %d %d\n' % (w,h)); print('Image size:',w,'x',h); print('Rectangle: 0 0',w,h)"
 
+          echo
+          echo "Rectangle metadata:"
           cat teacher_input/sample_rect.txt
 
       - name: Verify teacher input
@@ -255,7 +233,7 @@ jobs:
           find teacher_output -type f -print
 
           echo
-          echo "Output directory size:"
+          echo "Output size:"
           du -sh teacher_output
 
       - name: Validate OBJ mesh
@@ -278,7 +256,6 @@ jobs:
             find . -type f \
               \( -iname "*.obj" -o -iname "*.ply" \) \
               -print
-
             exit 1
           fi
 
@@ -310,7 +287,6 @@ jobs:
             fi
 
             echo "OBJ VALIDATION PASSED"
-
           done
 
       - name: Validate mesh with trimesh
