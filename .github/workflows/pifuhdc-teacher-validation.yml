@@ -1,0 +1,519 @@
+name: Step 4A - Real PIFuHDC Teacher Validation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  teacher-validation:
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 360
+
+    steps:
+
+      # ============================================================
+      # 1. CHECKOUT
+      # ============================================================
+
+      - name: Checkout project
+        uses: actions/checkout@v4
+
+
+      # ============================================================
+      # 2. PYTHON
+      # ============================================================
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+
+      # ============================================================
+      # 3. SYSTEM PACKAGES
+      # ============================================================
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            git \
+            wget \
+            libgl1 \
+            libglib2.0-0 \
+            ffmpeg
+
+
+      # ============================================================
+      # 4. PYTHON DEPENDENCIES
+      # ============================================================
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+
+          pip install \
+            numpy==1.26.4 \
+            scipy \
+            pillow \
+            scikit-image \
+            opencv-python-headless \
+            tqdm \
+            gdown \
+            trimesh
+
+          pip install \
+            torch==2.1.2 \
+            torchvision==0.16.2 \
+            --index-url https://download.pytorch.org/whl/cpu
+
+
+      # ============================================================
+      # 5. CLONE OFFICIAL PIFuHDC
+      # ============================================================
+
+      - name: Clone PIFuHDC
+        run: |
+          rm -rf pifuhdc
+
+          git clone \
+            --depth 1 \
+            https://github.com/xiahongchi/PIFuHDC.git \
+            pifuhdc
+
+
+      # ============================================================
+      # 6. DOWNLOAD TEACHER CHECKPOINTS
+      # ============================================================
+
+      - name: Prepare checkpoints
+        run: |
+          mkdir -p pifuhdc/checkpoints
+
+          rm -f pifuhdc/checkpoints/pifuhd.pt
+          rm -f pifuhdc/checkpoints/net_C_HD.pt
+
+
+      - name: Download PIFuHD teacher
+        run: |
+          wget \
+            --progress=dot:giga \
+            -O pifuhdc/checkpoints/pifuhd.pt \
+            https://dl.fbaipublicfiles.com/pifuhd/checkpoints/pifuhd.pt
+
+
+      - name: Download PIFuHDC color teacher
+        run: |
+          gdown \
+            "https://drive.google.com/uc?id=1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM" \
+            -O pifuhdc/checkpoints/net_C_HD.pt
+
+
+      # ============================================================
+      # 7. VERIFY CHECKPOINTS
+      # ============================================================
+
+      - name: Verify teacher checkpoints
+        run: |
+          python - <<'PY'
+
+          import os
+
+          files = [
+              "pifuhdc/checkpoints/pifuhd.pt",
+              "pifuhdc/checkpoints/net_C_HD.pt"
+          ]
+
+          print()
+          print("==========================================")
+          print("REAL PIFuHDC TEACHER")
+          print("==========================================")
+
+          total = 0
+
+          for path in files:
+
+              if not os.path.exists(path):
+                  raise RuntimeError(
+                      "Missing checkpoint: " + path
+                  )
+
+              size = os.path.getsize(path)
+
+              total += size
+
+              print()
+              print("File:", path)
+
+              print(
+                  "Size MB:",
+                  round(
+                      size / 1024 / 1024,
+                      2
+                  )
+              )
+
+          print()
+
+          print(
+              "Total teacher size MB:",
+              round(
+                  total / 1024 / 1024,
+                  2
+              )
+          )
+
+          print()
+
+          print(
+              "Both teacher checkpoints are present."
+          )
+
+          PY
+
+
+      # ============================================================
+      # 8. PREPARE REAL SAMPLE IMAGE
+      # ============================================================
+
+      - name: Prepare official sample image
+        run: |
+          mkdir -p teacher_input
+          mkdir -p teacher_output
+
+          wget \
+            -O teacher_input/sample.jpg \
+            https://raw.githubusercontent.com/xiahongchi/PIFuHDC/main/images/cxk.jpg
+
+          ls -lh teacher_input/
+
+
+      # ============================================================
+      # 9. INSPECT IMAGE
+      # ============================================================
+
+      - name: Inspect input image
+        run: |
+          python - <<'PY'
+
+          from PIL import Image
+
+          path = "teacher_input/sample.jpg"
+
+          image = Image.open(path)
+
+          print()
+          print("==========================================")
+          print("INPUT IMAGE")
+          print("==========================================")
+
+          print(
+              "Format:",
+              image.format
+          )
+
+          print(
+              "Size:",
+              image.size
+          )
+
+          print(
+              "Mode:",
+              image.mode
+          )
+
+          print()
+
+          print(
+              "Real human sample loaded successfully."
+          )
+
+          PY
+
+
+      # ============================================================
+      # 10. RUN REAL PIFuHDC
+      # ============================================================
+      #
+      # IMPORTANT:
+      #
+      # This is the first REAL teacher inference.
+      #
+      # We deliberately use resolution 256 first.
+      #
+      # If this succeeds, the next experiment can move toward
+      # 512 and then the real distillation dataset.
+      #
+      # ============================================================
+
+      - name: Run real PIFuHDC teacher
+        working-directory: pifuhdc
+        run: |
+
+          mkdir -p ../teacher_output
+
+          echo
+          echo "=========================================="
+          echo "RUNNING REAL PIFuHDC TEACHER"
+          echo "=========================================="
+
+          echo
+          echo "Input:"
+          echo "../teacher_input"
+
+          echo
+          echo "Output:"
+          echo "../teacher_output"
+
+          echo
+          echo "Resolution:"
+          echo "256"
+
+          echo
+          echo "Teacher:"
+          echo "pifuhd.pt"
+
+          echo
+          echo "Color teacher:"
+          echo "net_C_HD.pt"
+
+          echo
+
+          python -m apps.test_colorHD \
+            --input_path ../teacher_input \
+            --out_path ../teacher_output \
+            --ckpt_path ./checkpoints/pifuhd.pt \
+            --ckpt_path_Color ./checkpoints/net_C_HD.pt \
+            --resolution 256
+
+
+      # ============================================================
+      # 11. INSPECT TEACHER OUTPUT
+      # ============================================================
+
+      - name: Inspect teacher output
+        run: |
+          echo
+          echo "=========================================="
+          echo "TEACHER OUTPUT"
+          echo "=========================================="
+
+          find teacher_output \
+            -maxdepth 5 \
+            -type f \
+            -printf "%p %s bytes\n" \
+            | sort
+
+
+      # ============================================================
+      # 12. VERIFY OBJ OUTPUT
+      # ============================================================
+
+      - name: Validate generated mesh
+        run: |
+          python - <<'PY'
+
+          import os
+          import glob
+
+          paths = glob.glob(
+              "teacher_output/**/*.obj",
+              recursive=True
+          )
+
+          print()
+          print("==========================================")
+          print("MESH VALIDATION")
+          print("==========================================")
+
+          if not paths:
+
+              print(
+                  "No OBJ file was found."
+              )
+
+              raise RuntimeError(
+                  "PIFuHDC did not produce a mesh."
+              )
+
+
+          for path in paths:
+
+              size = os.path.getsize(path)
+
+              print()
+              print(
+                  "OBJ:",
+                  path
+              )
+
+              print(
+                  "Bytes:",
+                  size
+              )
+
+              if size == 0:
+
+                  raise RuntimeError(
+                      "Generated OBJ is empty: "
+                      + path
+                  )
+
+
+          print()
+
+          print(
+              "Real 3D teacher mesh generated successfully."
+          )
+
+          PY
+
+
+      # ============================================================
+      # 13. COUNT MESH DATA
+      # ============================================================
+
+      - name: Analyze mesh
+        run: |
+          python - <<'PY'
+
+          import glob
+          import os
+
+          paths = glob.glob(
+              "teacher_output/**/*.obj",
+              recursive=True
+          )
+
+          print()
+          print("==========================================")
+          print("PIFuHDC MESH ANALYSIS")
+          print("==========================================")
+
+          for path in paths:
+
+              vertices = 0
+              faces = 0
+              colors = 0
+
+              with open(
+                  path,
+                  "r",
+                  errors="ignore"
+              ) as f:
+
+                  for line in f:
+
+                      if line.startswith("v "):
+
+                          vertices += 1
+
+                      elif line.startswith("f "):
+
+                          faces += 1
+
+                      elif line.startswith("vc "):
+
+                          colors += 1
+
+
+              print()
+              print(
+                  "File:",
+                  path
+              )
+
+              print(
+                  "Vertices:",
+                  vertices
+              )
+
+              print(
+                  "Faces:",
+                  faces
+              )
+
+              print(
+                  "Vertex colors:",
+                  colors
+              )
+
+              print(
+                  "File MB:",
+                  round(
+                      os.path.getsize(path)
+                      / 1024
+                      / 1024,
+                      2
+                  )
+              )
+
+          PY
+
+
+      # ============================================================
+      # 14. CREATE TEACHER REPORT
+      # ============================================================
+
+      - name: Create teacher report
+        if: always()
+        run: |
+          mkdir -p reports
+
+          {
+            echo "REAL PIFuHDC TEACHER VALIDATION"
+            echo "================================"
+            echo
+            echo "Teacher:"
+            echo "PIFuHD + PIFuHDC Color"
+            echo
+            echo "Input:"
+            echo "Official PIFuHDC sample image"
+            echo
+            echo "Resolution:"
+            echo "256"
+            echo
+            echo "Teacher checkpoints:"
+            ls -lh pifuhdc/checkpoints/
+            echo
+            echo "Generated output:"
+            find teacher_output \
+              -maxdepth 5 \
+              -type f \
+              -printf "%p %s bytes\n"
+            echo
+            echo "NEXT:"
+            echo "Build correct PIFu-style student:"
+            echo "image encoder"
+            echo "+"
+            echo "3D query coordinates"
+            echo "+"
+            echo "pixel-aligned feature sampling"
+            echo "+"
+            echo "geometry head"
+            echo "+"
+            echo "RGB head"
+          } > reports/teacher_validation.txt
+
+          cat reports/teacher_validation.txt
+
+
+      # ============================================================
+      # 15. UPLOAD TEACHER OUTPUT
+      # ============================================================
+
+      - name: Upload teacher validation artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+
+        with:
+          name: pifuhdc-real-teacher-validation
+
+          path: |
+            teacher_output/
+            reports/teacher_validation.txt
+
+          if-no-files-found: warn
+
+          retention-days: 7
