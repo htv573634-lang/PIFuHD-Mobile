@@ -1,0 +1,472 @@
+name: Step 3 - PIFuHDC Mobile Distillation Prototype
+
+on:
+  workflow_dispatch:
+
+jobs:
+  distill-prototype:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git \
+            wget \
+            libgl1 \
+            libglib2.0-0
+
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
+
+          pip install \
+            numpy==1.26.4 \
+            scipy \
+            pillow \
+            opencv-python-headless \
+            tqdm
+
+          pip install \
+            torch==2.1.2 \
+            torchvision==0.16.2 \
+            --index-url https://download.pytorch.org/whl/cpu
+
+      # ==========================================================
+      # GET PIFuHDC SOURCE
+      # ==========================================================
+
+      - name: Clone PIFuHDC
+        run: |
+          rm -rf pifuhdc
+
+          git clone --depth 1 \
+            https://github.com/xiahongchi/PIFuHDC.git \
+            pifuhdc
+
+      # ==========================================================
+      # DOWNLOAD TEACHER CHECKPOINTS
+      # ==========================================================
+
+      - name: Prepare checkpoints
+        run: |
+          mkdir -p pifuhdc/checkpoints
+
+      - name: Download PIFuHD teacher
+        run: |
+          wget \
+            --progress=dot:giga \
+            -O pifuhdc/checkpoints/pifuhd.pt \
+            https://dl.fbaipublicfiles.com/pifuhd/checkpoints/pifuhd.pt
+
+      - name: Download PIFuHDC color teacher
+        run: |
+          pip install gdown
+
+          gdown \
+            "https://drive.google.com/uc?id=1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM" \
+            -O pifuhdc/checkpoints/net_C_HD.pt
+
+      # ==========================================================
+      # VERIFY TEACHERS
+      # ==========================================================
+
+      - name: Verify teacher checkpoints
+        run: |
+          python - <<'PY'
+          import os
+
+          files = [
+              "pifuhdc/checkpoints/pifuhd.pt",
+              "pifuhdc/checkpoints/net_C_HD.pt"
+          ]
+
+          print()
+          print("==========================================")
+          print("TEACHER CHECKPOINTS")
+          print("==========================================")
+
+          total = 0
+
+          for path in files:
+              if not os.path.exists(path):
+                  raise RuntimeError("Missing: " + path)
+
+              size = os.path.getsize(path)
+              total += size
+
+              print(path)
+              print(" bytes:", size)
+              print(" MB:", round(size / 1024 / 1024, 2))
+              print()
+
+          print("Total teacher size MB:",
+                round(total / 1024 / 1024, 2))
+          PY
+
+      # ==========================================================
+      # CREATE MOBILE STUDENT
+      # ==========================================================
+
+      - name: Create student distillation program
+        run: |
+          mkdir -p distillation
+
+          cat > distillation/mobile_student.py <<'PY'
+          import torch
+          import torch.nn as nn
+
+
+          class MobilePIFuStudent(nn.Module):
+              """
+              Prototype mobile student.
+
+              This is intentionally small and is NOT yet claimed
+              to reproduce PIFuHDC quality.
+
+              It provides the compact architecture that we will
+              later train using real teacher targets.
+              """
+
+              def __init__(self, width=32):
+                  super().__init__()
+
+                  self.encoder = nn.Sequential(
+                      nn.Conv2d(3, width, 3, 2, 1),
+                      nn.ReLU(inplace=True),
+
+                      nn.Conv2d(width, width * 2, 3, 2, 1),
+                      nn.ReLU(inplace=True),
+
+                      nn.Conv2d(width * 2, width * 4, 3, 2, 1),
+                      nn.ReLU(inplace=True),
+
+                      nn.Conv2d(width * 4, width * 4, 3, 2, 1),
+                      nn.ReLU(inplace=True),
+
+                      nn.Conv2d(width * 4, width * 4, 3, 1, 1),
+                      nn.ReLU(inplace=True)
+                  )
+
+                  self.geometry_head = nn.Sequential(
+                      nn.Conv2d(width * 4, width * 2, 1),
+                      nn.ReLU(inplace=True),
+                      nn.Conv2d(width * 2, 1, 1)
+                  )
+
+                  self.color_head = nn.Sequential(
+                      nn.Conv2d(width * 4, width * 2, 1),
+                      nn.ReLU(inplace=True),
+                      nn.Conv2d(width * 2, 3, 1),
+                      nn.Tanh()
+                  )
+
+              def forward(self, x):
+                  features = self.encoder(x)
+
+                  geometry = self.geometry_head(features)
+                  color = self.color_head(features)
+
+                  return geometry, color
+
+
+          if __name__ == "__main__":
+              model = MobilePIFuStudent(width=32)
+
+              parameters = sum(
+                  p.numel()
+                  for p in model.parameters()
+              )
+
+              print("Student parameters:", parameters)
+              print(
+                  "Student parameters (M):",
+                  round(parameters / 1_000_000, 3)
+              )
+
+              x = torch.randn(
+                  1, 3, 256, 256
+              )
+
+              with torch.no_grad():
+                  geometry, color = model(x)
+
+              print(
+                  "Input:",
+                  tuple(x.shape)
+              )
+
+              print(
+                  "Geometry:",
+                  tuple(geometry.shape)
+              )
+
+              print(
+                  "Color:",
+                  tuple(color.shape)
+              )
+
+              fp32_bytes = parameters * 4
+              fp16_bytes = parameters * 2
+
+              print(
+                  "Estimated FP32 weights MB:",
+                  round(fp32_bytes / 1024 / 1024, 2)
+              )
+
+              print(
+                  "Estimated FP16 weights MB:",
+                  round(fp16_bytes / 1024 / 1024, 2)
+              )
+          PY
+
+      # ==========================================================
+      # TEST STUDENT
+      # ==========================================================
+
+      - name: Test mobile student
+        run: |
+          python distillation/mobile_student.py
+
+      # ==========================================================
+      # CREATE SYNTHETIC DISTILLATION TEST
+      # ==========================================================
+
+      - name: Run synthetic teacher-student experiment
+        run: |
+          cat > distillation/distill_prototype.py <<'PY'
+          import torch
+          import torch.nn.functional as F
+
+          from mobile_student import MobilePIFuStudent
+
+
+          torch.manual_seed(42)
+
+          device = torch.device("cpu")
+
+          student = MobilePIFuStudent(
+              width=32
+          ).to(device)
+
+          optimizer = torch.optim.Adam(
+              student.parameters(),
+              lr=1e-3
+          )
+
+          print()
+          print("==========================================")
+          print("SYNTHETIC DISTILLATION TEST")
+          print("==========================================")
+
+          print("Important:")
+          print(
+              "This experiment does NOT produce a "
+              "production-quality PIFuHDC replacement."
+          )
+
+          print(
+              "It only verifies that the compact "
+              "student can be trained and exported."
+          )
+
+          for step in range(20):
+
+              # Synthetic input.
+              x = torch.randn(
+                  1, 3, 256, 256,
+                  device=device
+              )
+
+              # Synthetic teacher-like targets.
+              #
+              # These are deliberately generated without
+              # personal images. They only test the training
+              # mechanism.
+              with torch.no_grad():
+                  target_geometry = torch.sigmoid(
+                      x.mean(
+                          dim=1,
+                          keepdim=True
+                      )
+                  )
+
+                  target_color = torch.tanh(x)
+
+                  target_color = F.avg_pool2d(
+                      target_color,
+                      kernel_size=16,
+                      stride=16
+                  )
+
+              geometry, color = student(x)
+
+              target_geometry = F.interpolate(
+                  target_geometry,
+                  size=geometry.shape[-2:],
+                  mode="bilinear",
+                  align_corners=False
+              )
+
+              target_color = F.interpolate(
+                  target_color,
+                  size=color.shape[-2:],
+                  mode="bilinear",
+                  align_corners=False
+              )
+
+              loss_geometry = F.mse_loss(
+                  geometry,
+                  target_geometry
+              )
+
+              loss_color = F.mse_loss(
+                  color,
+                  target_color
+              )
+
+              loss = (
+                  loss_geometry +
+                  loss_color
+              )
+
+              optimizer.zero_grad()
+              loss.backward()
+              optimizer.step()
+
+              if step == 0 or (step + 1) % 5 == 0:
+                  print(
+                      "step:",
+                      step + 1,
+                      "loss:",
+                      float(loss)
+                  )
+
+          print()
+          print("Synthetic distillation test completed.")
+
+          torch.save(
+              student.state_dict(),
+              "distillation/mobile_student_prototype.pt"
+          )
+
+          print(
+              "Saved:",
+              "distillation/mobile_student_prototype.pt"
+          )
+          PY
+
+          cd distillation
+
+          python distill_prototype.py
+
+          cd ..
+
+      # ==========================================================
+      # EXPORT FP16
+      # ==========================================================
+
+      - name: Export FP16 student
+        run: |
+          python - <<'PY'
+          import os
+          import torch
+
+          from distillation.mobile_student import (
+              MobilePIFuStudent
+          )
+
+          model = MobilePIFuStudent(
+              width=32
+          )
+
+          checkpoint = (
+              "distillation/"
+              "mobile_student_prototype.pt"
+          )
+
+          state = torch.load(
+              checkpoint,
+              map_location="cpu"
+          )
+
+          model.load_state_dict(state)
+          model.eval()
+
+          model.half()
+
+          output = (
+              "distillation/"
+              "mobile_student_fp16.pt"
+          )
+
+          torch.save(
+              model.state_dict(),
+              output
+          )
+
+          print("Saved:", output)
+
+          for path in [
+              checkpoint,
+              output
+          ]:
+              size = os.path.getsize(path)
+
+              print(
+                  path,
+                  round(size / 1024 / 1024, 2),
+                  "MB"
+              )
+          PY
+
+      # ==========================================================
+      # REPORT
+      # ==========================================================
+
+      - name: Create distillation report
+        if: always()
+        run: |
+          mkdir -p reports
+
+          {
+            echo "PIFuHDC MOBILE DISTILLATION PROTOTYPE"
+            echo "======================================"
+            echo
+            echo "Teacher:"
+            ls -lh pifuhdc/checkpoints/
+            echo
+            echo "Student:"
+            ls -lh distillation/
+            echo
+            echo "This is a synthetic technical prototype."
+            echo "It is NOT yet a production PIFuHDC replacement."
+          } > reports/distillation_report.txt
+
+          cat reports/distillation_report.txt
+
+      # ==========================================================
+      # UPLOAD STUDENT ONLY
+      # ==========================================================
+
+      - name: Upload student prototype
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pifuhdc-mobile-distillation-prototype
+          path: |
+            distillation/mobile_student_prototype.pt
+            distillation/mobile_student_fp16.pt
+            reports/distillation_report.txt
+          if-no-files-found: warn
+          retention-days: 7
