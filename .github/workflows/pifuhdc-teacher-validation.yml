@@ -51,6 +51,8 @@ jobs:
 
       - name: Clone official PIFuHDC
         run: |
+          set -e
+
           rm -rf pifuhdc
 
           git clone --depth 1 \
@@ -59,6 +61,8 @@ jobs:
 
       - name: Prepare directories
         run: |
+          set -e
+
           mkdir -p pifuhdc/checkpoints
           mkdir -p teacher_input
           mkdir -p teacher_output
@@ -76,7 +80,7 @@ jobs:
             "https://dl.fbaipublicfiles.com/pifuhd/checkpoints/pifuhd.pt" \
             -O checkpoints/pifuhd.pt
 
-          test -f checkpoints/pifuhd.pt
+          test -s checkpoints/pifuhd.pt
 
           SIZE=$(stat -c%s checkpoints/pifuhd.pt)
 
@@ -104,7 +108,7 @@ jobs:
             1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM \
             -O checkpoints/net_C_HD.pt
 
-          test -f checkpoints/net_C_HD.pt
+          test -s checkpoints/net_C_HD.pt
 
           SIZE=$(stat -c%s checkpoints/net_C_HD.pt)
 
@@ -154,12 +158,18 @@ jobs:
         run: |
           set -e
 
+          echo "=========================================="
+          echo "DOWNLOADING TEST HUMAN IMAGE"
+          echo "=========================================="
+
           wget \
-            "https://raw.githubusercontent.com/xiahongchi/PIFuHDC/main/sample_images/cxk.jpg" \
+            "https://raw.githubusercontent.com/facebookresearch/pifuhd/master/sample_images/cxk.jpg" \
             -O teacher_input/sample.jpg
 
-          test -f teacher_input/sample.jpg
+          test -s teacher_input/sample.jpg
 
+          echo "Sample image downloaded:"
+          file teacher_input/sample.jpg
           ls -lh teacher_input/sample.jpg
 
       - name: Create rectangle metadata
@@ -187,11 +197,15 @@ jobs:
       - name: Validate EvalDataset
         working-directory: pifuhdc
         run: |
+          set -e
+
           python -c "from lib.data.EvalDataset import EvalDataset; O=type('Opt',(),{'dataroot':'../teacher_input','loadSize':1024}); d=EvalDataset(O()); print('Dataset length:',len(d)); assert len(d)==1; print('EvalDataset PASSED')"
 
       - name: Validate Python imports
         working-directory: pifuhdc
         run: |
+          set -e
+
           python -c "import torch,cv2,PIL,skimage,trimesh,matplotlib; print('PyTorch:',torch.__version__); print('OpenCV:',cv2.__version__); print('Pillow:',PIL.__version__); print('scikit-image:',skimage.__version__); print('trimesh:',trimesh.__version__); print('matplotlib:',matplotlib.__version__); print('IMPORT VALIDATION PASSED')"
 
       - name: Run real PIFuHDC teacher
@@ -213,6 +227,8 @@ jobs:
 
       - name: Inspect teacher output
         run: |
+          set -e
+
           echo "=========================================="
           echo "TEACHER OUTPUT"
           echo "=========================================="
@@ -251,7 +267,7 @@ jobs:
             exit 1
           fi
 
-          for OBJ in $(find teacher_output -type f -iname "*.obj"); do
+          while IFS= read -r OBJ; do
 
             echo "------------------------------------------"
             echo "MESH: $OBJ"
@@ -279,7 +295,7 @@ jobs:
 
             echo "OBJ VALIDATION PASSED"
 
-          done
+          done < <(find teacher_output -type f -iname "*.obj")
 
       - name: Validate mesh with trimesh
         run: |
@@ -289,6 +305,8 @@ jobs:
 
       - name: Create teacher report
         run: |
+          set -e
+
           printf '%s\n' \
             'PIFuHDC REAL TEACHER VALIDATION' \
             '================================' \
