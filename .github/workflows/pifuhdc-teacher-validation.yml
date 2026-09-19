@@ -9,44 +9,23 @@ jobs:
     timeout-minutes: 360
 
     steps:
-
-      # ============================================================
-      # 1. CHECKOUT
-      # ============================================================
-
       - name: Checkout project
         uses: actions/checkout@v4
-
-
-      # ============================================================
-      # 2. PYTHON
-      # ============================================================
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-
-      # ============================================================
-      # 3. SYSTEM PACKAGES
-      # ============================================================
-
       - name: Install system packages
         run: |
           sudo apt-get update
-
           sudo apt-get install -y \
             git \
             wget \
             libgl1 \
             libglib2.0-0 \
             ffmpeg
-
-
-      # ============================================================
-      # 4. PYTHON DEPENDENCIES
-      # ============================================================
 
       - name: Install Python dependencies
         run: |
@@ -69,12 +48,7 @@ jobs:
             torchvision==0.16.2 \
             --index-url https://download.pytorch.org/whl/cpu
 
-
-      # ============================================================
-      # 5. VERIFY PYTHON ENVIRONMENT
-      # ============================================================
-
-      - name: Verify Python dependencies
+      - name: Verify Python environment
         run: |
           python - <<'PY'
           import torch
@@ -90,27 +64,17 @@ jobs:
           print("==========================================")
           print("PYTHON ENVIRONMENT")
           print("==========================================")
-
-          print("Python dependencies loaded successfully.")
-
-          print()
           print("Torch:", torch.__version__)
           print("Torchvision:", torchvision.__version__)
           print("NumPy:", numpy.__version__)
           print("OpenCV:", cv2.__version__)
           print("Matplotlib:", matplotlib.__version__)
           print("Trimesh:", trimesh.__version__)
-
           print()
           print("Environment check passed.")
           PY
 
-
-      # ============================================================
-      # 6. CLONE OFFICIAL PIFuHDC
-      # ============================================================
-
-      - name: Clone PIFuHDC
+      - name: Clone official PIFuHDC
         run: |
           rm -rf pifuhdc
 
@@ -119,35 +83,21 @@ jobs:
             https://github.com/xiahongchi/PIFuHDC.git \
             pifuhdc
 
-
-      # ============================================================
-      # 7. PREPARE CHECKPOINTS
-      # ============================================================
-
-      - name: Prepare checkpoints
+      - name: Prepare checkpoint directory
         run: |
           mkdir -p pifuhdc/checkpoints
 
           rm -f pifuhdc/checkpoints/pifuhd.pt
           rm -f pifuhdc/checkpoints/pifuhd.pt.1
           rm -f pifuhdc/checkpoints/net_C_HD.pt
+          rm -f pifuhdc/checkpoints/net_C_choice2.pt
 
-
-      # ============================================================
-      # 8. DOWNLOAD PIFuHD TEACHER
-      # ============================================================
-
-      - name: Download PIFuHD teacher
+      - name: Download PIFuHD geometry teacher
         run: |
           wget \
             --progress=dot:giga \
             -O pifuhdc/checkpoints/pifuhd.pt \
             https://dl.fbaipublicfiles.com/pifuhd/checkpoints/pifuhd.pt
-
-
-      # ============================================================
-      # 9. DOWNLOAD PIFuHDC COLOR TEACHER
-      # ============================================================
 
       - name: Download PIFuHDC color teacher
         run: |
@@ -155,79 +105,93 @@ jobs:
             "https://drive.google.com/uc?id=1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM" \
             -O pifuhdc/checkpoints/net_C_HD.pt
 
+      - name: Create official default color checkpoint alias
+        run: |
+          cp \
+            pifuhdc/checkpoints/net_C_HD.pt \
+            pifuhdc/checkpoints/net_C_choice2.pt
 
-      # ============================================================
-      # 10. VERIFY TEACHER CHECKPOINTS
-      # ============================================================
+          echo
+          echo "=========================================="
+          echo "COLOR CHECKPOINT ALIAS"
+          echo "=========================================="
+
+          ls -lh \
+            pifuhdc/checkpoints/net_C_HD.pt \
+            pifuhdc/checkpoints/net_C_choice2.pt
+
+          echo
+          echo "Both filenames point to the same downloaded"
+          echo "PIFuHDC color checkpoint."
 
       - name: Verify teacher checkpoints
         run: |
           python - <<'PY'
           import os
+          import hashlib
 
-          files = [
+          paths = [
               "pifuhdc/checkpoints/pifuhd.pt",
-              "pifuhdc/checkpoints/net_C_HD.pt"
+              "pifuhdc/checkpoints/net_C_HD.pt",
+              "pifuhdc/checkpoints/net_C_choice2.pt"
           ]
 
           print()
           print("==========================================")
-          print("PIFuHDC TEACHER CHECKPOINTS")
+          print("TEACHER CHECKPOINT VERIFICATION")
           print("==========================================")
 
-          total = 0
-
-          for path in files:
-
+          for path in paths:
               if not os.path.exists(path):
-                  raise RuntimeError(
-                      "Missing checkpoint: " + path
-                  )
+                  raise RuntimeError("Missing checkpoint: " + path)
 
               size = os.path.getsize(path)
-              total += size
+
+              sha256 = hashlib.sha256()
+
+              with open(path, "rb") as f:
+                  for block in iter(lambda: f.read(1024 * 1024), b""):
+                      sha256.update(block)
 
               print()
               print("File:", path)
               print("Bytes:", size)
-              print(
-                  "MB:",
-                  round(
-                      size / 1024 / 1024,
-                      2
-                  )
-              )
+              print("MB:", round(size / 1024 / 1024, 2))
+              print("SHA256:", sha256.hexdigest())
+
+          hd = hashlib.sha256(
+              open(
+                  "pifuhdc/checkpoints/net_C_HD.pt",
+                  "rb"
+              ).read()
+          ).hexdigest()
+
+          choice2 = hashlib.sha256(
+              open(
+                  "pifuhdc/checkpoints/net_C_choice2.pt",
+                  "rb"
+              ).read()
+          ).hexdigest()
 
           print()
-          print(
-              "Total teacher size MB:",
-              round(
-                  total / 1024 / 1024,
-                  2
+          print("Color checkpoint hashes identical:", hd == choice2)
+
+          if hd != choice2:
+              raise RuntimeError(
+                  "net_C_HD.pt and net_C_choice2.pt differ."
               )
-          )
 
           print()
           print("Teacher checkpoints verified.")
           PY
 
-
-      # ============================================================
-      # 11. PREPARE INPUT / OUTPUT
-      # ============================================================
-
-      - name: Prepare directories
+      - name: Prepare input and output directories
         run: |
           mkdir -p teacher_input
           mkdir -p teacher_output
           mkdir -p reports
 
-
-      # ============================================================
-      # 12. DOWNLOAD OFFICIAL SAMPLE
-      # ============================================================
-
-      - name: Prepare official sample image
+      - name: Download official sample
         run: |
           wget \
             -O teacher_input/sample.jpg \
@@ -239,11 +203,6 @@ jobs:
           echo "=========================================="
 
           ls -lh teacher_input/
-
-
-      # ============================================================
-      # 13. INSPECT INPUT
-      # ============================================================
 
       - name: Inspect input image
         run: |
@@ -258,19 +217,53 @@ jobs:
           print("==========================================")
           print("IMAGE INFORMATION")
           print("==========================================")
-
           print("Format:", image.format)
           print("Size:", image.size)
           print("Mode:", image.mode)
-
           print()
           print("Input image loaded successfully.")
           PY
 
+      - name: Create rectangle crop metadata
+        run: |
+          python - <<'PY'
+          from PIL import Image
+          import numpy as np
 
-      # ============================================================
-      # 14. VERIFY PIFuHDC IMPORTS
-      # ============================================================
+          image_path = "teacher_input/sample.jpg"
+          rect_path = "teacher_input/sample_rect.txt"
+
+          image = Image.open(image_path)
+
+          width, height = image.size
+
+          # Full-image square crop.
+          side = max(width, height)
+
+          x = (width - side) // 2
+          y = (height - side) // 2
+
+          rect = np.array(
+              [[x, y, side, side]],
+              dtype=np.int32
+          )
+
+          np.savetxt(
+              rect_path,
+              rect,
+              fmt="%d"
+          )
+
+          print()
+          print("==========================================")
+          print("RECTANGLE METADATA")
+          print("==========================================")
+          print("Image:", width, "x", height)
+          print("Rect:", rect.tolist())
+          print("Saved:", rect_path)
+          PY
+
+          cat teacher_input/sample_rect.txt
 
       - name: Verify PIFuHDC imports
         working-directory: pifuhdc
@@ -283,42 +276,72 @@ jobs:
           print("==========================================")
           print("PIFuHDC IMPORT TEST")
           print("==========================================")
-
           print("test_colorHD import: OK")
           print("recon import: OK")
           print()
           print("PIFuHDC Python modules loaded.")
           PY
 
+      - name: Verify checkpoint argument handling
+        working-directory: pifuhdc
+        run: |
+          python - <<'PY'
+          import sys
 
-      # ============================================================
-      # 15. RUN REAL PIFuHDC
-      # ============================================================
+          sys.argv = [
+              "apps.test_colorHD",
+              "--input_path",
+              "../teacher_input",
+              "--out_path",
+              "../teacher_output",
+              "--ckpt_path",
+              "./checkpoints/pifuhd.pt",
+              "--ckpt_path_Color",
+              "./checkpoints/net_C_HD.pt",
+              "--resolution",
+              "256",
+              "--use_rect"
+          ]
+
+          import apps.test_colorHD
+
+          print()
+          print("==========================================")
+          print("CHECKPOINT ARGUMENT TEST")
+          print("==========================================")
+          print("Geometry checkpoint:")
+          print("./checkpoints/pifuhd.pt")
+          print()
+          print("Color checkpoint:")
+          print("./checkpoints/net_C_HD.pt")
+          print()
+          print("Rectangle mode:")
+          print("enabled")
+          PY
 
       - name: Run real PIFuHDC teacher
         working-directory: pifuhdc
         run: |
-
           echo
           echo "=========================================="
           echo "REAL PIFuHDC TEACHER INFERENCE"
           echo "=========================================="
 
           echo
-          echo "Input:"
-          echo "../teacher_input"
+          echo "Geometry:"
+          echo "checkpoints/pifuhd.pt"
 
           echo
-          echo "Output:"
-          echo "../teacher_output"
+          echo "Color:"
+          echo "checkpoints/net_C_HD.pt"
 
           echo
-          echo "Geometry teacher:"
-          echo "pifuhd.pt"
+          echo "Resolution:"
+          echo "256"
 
           echo
-          echo "Color teacher:"
-          echo "net_C_HD.pt"
+          echo "Crop mode:"
+          echo "rectangle"
 
           echo
           echo "Starting inference..."
@@ -329,12 +352,8 @@ jobs:
             --out_path ../teacher_output \
             --ckpt_path ./checkpoints/pifuhd.pt \
             --ckpt_path_Color ./checkpoints/net_C_HD.pt \
-            --resolution 256
-
-
-      # ============================================================
-      # 16. SHOW OUTPUT
-      # ============================================================
+            --resolution 256 \
+            --use_rect
 
       - name: Inspect teacher output
         if: always()
@@ -346,18 +365,13 @@ jobs:
 
           if [ -d "teacher_output" ]; then
             find teacher_output \
-              -maxdepth 6 \
+              -maxdepth 8 \
               -type f \
               -printf "%p %s bytes\n" \
               | sort
           else
             echo "teacher_output directory does not exist."
           fi
-
-
-      # ============================================================
-      # 17. VALIDATE MESH
-      # ============================================================
 
       - name: Validate generated mesh
         if: success()
@@ -382,7 +396,6 @@ jobs:
               )
 
           for path in paths:
-
               size = os.path.getsize(path)
 
               print()
@@ -396,14 +409,8 @@ jobs:
 
           print()
           print("REAL 3D MESH GENERATED SUCCESSFULLY.")
-          PY
 
-
-      # ============================================================
-      # 18. ANALYZE MESH
-      # ============================================================
-
-      - name: Analyze mesh
+      - name: Analyze generated mesh
         if: success()
         run: |
           python - <<'PY'
@@ -420,7 +427,6 @@ jobs:
           print("==========================================")
 
           for path in paths:
-
               vertices = 0
               faces = 0
               vertex_colors = 0
@@ -432,7 +438,6 @@ jobs:
               ) as f:
 
                   for line in f:
-
                       if line.startswith("v "):
                           vertices += 1
 
@@ -446,21 +451,12 @@ jobs:
               print("File:", path)
               print("Vertices:", vertices)
               print("Faces:", faces)
-              print(
-                  "Vertex colors:",
-                  vertex_colors
-              )
+              print("Vertex colors:", vertex_colors)
 
           print()
           print("Mesh analysis completed.")
-          PY
 
-
-      # ============================================================
-      # 19. CREATE REPORT
-      # ============================================================
-
-      - name: Create teacher report
+      - name: Create validation report
         if: always()
         run: |
           {
@@ -468,46 +464,44 @@ jobs:
             echo "================================"
             echo
             echo "Teacher:"
-            echo "PIFuHD + PIFuHDC Color"
-            echo
-            echo "Input:"
-            echo "Official PIFuHDC sample"
+            echo "PIFuHD geometry + PIFuHDC color"
             echo
             echo "Resolution:"
             echo "256"
             echo
-            echo "Checkpoints:"
+            echo "Color checkpoint:"
+            echo "net_C_HD.pt"
+            echo
+            echo "Compatibility alias:"
+            echo "net_C_choice2.pt"
+            echo
+            echo "Crop:"
+            echo "rectangle"
+            echo
+            echo "Checkpoint files:"
             ls -lh pifuhdc/checkpoints/
             echo
-            echo "Output:"
+            echo "Teacher output:"
             find teacher_output \
-              -maxdepth 6 \
+              -maxdepth 8 \
               -type f \
-              -printf "%p %s bytes\n"
+              -printf "%p %s bytes\n" \
+              2>/dev/null || true
             echo
             echo "Purpose:"
             echo "Validate real PIFuHDC teacher output"
-            echo "before building the production student."
+            echo "before production student distillation."
           } > reports/teacher_validation.txt
 
           cat reports/teacher_validation.txt
 
-
-      # ============================================================
-      # 20. UPLOAD OUTPUT
-      # ============================================================
-
       - name: Upload teacher validation artifact
         if: always()
         uses: actions/upload-artifact@v4
-
         with:
           name: pifuhdc-real-teacher-validation
-
           path: |
             teacher_output/
             reports/teacher_validation.txt
-
           if-no-files-found: warn
-
           retention-days: 7
