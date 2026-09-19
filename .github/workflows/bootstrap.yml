@@ -3,10 +3,57 @@ name: Bootstrap PIFuHD Mobile
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  test:
+  bootstrap:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Test
-        run: echo "PIFuHD Mobile workflow is working!"
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create folders
+        run: |
+          mkdir -p conversion benchmark scripts samples models tests
+
+      - name: Create README
+        run: |
+          cat > README.md <<'EOF'
+          # PIFuHD-Mobile
+
+          PIFuHD mobile optimization project.
+
+          Goal:
+          Photo -> PIFuHD -> 3D human mesh -> texture -> GLB
+          EOF
+
+      - name: Create project files
+        run: |
+          touch conversion/export_onnx.py
+          touch conversion/validate_onnx.py
+          touch conversion/convert_fp16.py
+          touch conversion/quantize_int8.py
+
+          touch benchmark/benchmark_pytorch.py
+          touch benchmark/benchmark_onnx.py
+
+          touch scripts/download_pifuhd.py
+          touch scripts/verify_checkpoint.py
+          touch scripts/report_model.py
+
+          touch samples/.gitkeep
+          touch models/.gitkeep
+          touch tests/.gitkeep
+
+      - name: Save changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add .
+
+          git commit -m "Create PIFuHD Mobile project structure" || echo "Nothing to commit"
+
+          git push
