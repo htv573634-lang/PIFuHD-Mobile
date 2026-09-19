@@ -9,22 +9,43 @@ jobs:
     timeout-minutes: 120
 
     steps:
+
+      # ============================================================
+      # 1. CHECKOUT
+      # ============================================================
+
       - name: Checkout project
         uses: actions/checkout@v4
+
+
+      # ============================================================
+      # 2. PYTHON
+      # ============================================================
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
+
+      # ============================================================
+      # 3. SYSTEM PACKAGES
+      # ============================================================
+
       - name: Install system packages
         run: |
           sudo apt-get update
+
           sudo apt-get install -y \
             git \
             wget \
             libgl1 \
             libglib2.0-0
+
+
+      # ============================================================
+      # 4. PYTHON PACKAGES
+      # ============================================================
 
       - name: Install Python packages
         run: |
@@ -43,21 +64,24 @@ jobs:
             torchvision==0.16.2 \
             --index-url https://download.pytorch.org/whl/cpu
 
-      # ==========================================================
-      # GET PIFuHDC SOURCE
-      # ==========================================================
+
+      # ============================================================
+      # 5. CLONE OFFICIAL PIFuHDC
+      # ============================================================
 
       - name: Clone PIFuHDC
         run: |
           rm -rf pifuhdc
 
-          git clone --depth 1 \
+          git clone \
+            --depth 1 \
             https://github.com/xiahongchi/PIFuHDC.git \
             pifuhdc
 
-      # ==========================================================
-      # PREPARE CHECKPOINTS
-      # ==========================================================
+
+      # ============================================================
+      # 6. PREPARE CHECKPOINT DIRECTORY
+      # ============================================================
 
       - name: Prepare checkpoints
         run: |
@@ -67,9 +91,10 @@ jobs:
           rm -f pifuhdc/checkpoints/pifuhd.pt.1
           rm -f pifuhdc/checkpoints/net_C_HD.pt
 
-      # ==========================================================
-      # DOWNLOAD PIFuHD TEACHER
-      # ==========================================================
+
+      # ============================================================
+      # 7. DOWNLOAD PIFuHD TEACHER
+      # ============================================================
 
       - name: Download PIFuHD teacher
         run: |
@@ -78,9 +103,10 @@ jobs:
             -O pifuhdc/checkpoints/pifuhd.pt \
             https://dl.fbaipublicfiles.com/pifuhd/checkpoints/pifuhd.pt
 
-      # ==========================================================
-      # DOWNLOAD PIFuHDC COLOR TEACHER
-      # ==========================================================
+
+      # ============================================================
+      # 8. DOWNLOAD PIFuHDC COLOR TEACHER
+      # ============================================================
 
       - name: Download PIFuHDC color teacher
         run: |
@@ -88,9 +114,10 @@ jobs:
             "https://drive.google.com/uc?id=1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM" \
             -O pifuhdc/checkpoints/net_C_HD.pt
 
-      # ==========================================================
-      # VERIFY TEACHER CHECKPOINTS
-      # ==========================================================
+
+      # ============================================================
+      # 9. VERIFY TEACHER MODELS
+      # ============================================================
 
       - name: Verify teacher checkpoints
         run: |
@@ -104,7 +131,7 @@ jobs:
 
           print()
           print("==========================================")
-          print("TEACHER CHECKPOINTS")
+          print("PIFuHDC TEACHER CHECKPOINTS")
           print("==========================================")
 
           total = 0
@@ -117,46 +144,63 @@ jobs:
                   )
 
               size = os.path.getsize(path)
+
               total += size
 
               print()
               print("File:", path)
               print("Bytes:", size)
+
               print(
                   "MB:",
-                  round(size / 1024 / 1024, 2)
+                  round(
+                      size / 1024 / 1024,
+                      2
+                  )
               )
+
               print(
                   "GB:",
-                  round(size / 1024 / 1024 / 1024, 3)
+                  round(
+                      size / 1024 / 1024 / 1024,
+                      3
+                  )
               )
 
           print()
           print(
               "Total teacher size MB:",
-              round(total / 1024 / 1024, 2)
+              round(
+                  total / 1024 / 1024,
+                  2
+              )
           )
 
           print()
-          print("Teacher checkpoints verified.")
+          print(
+              "Teacher checkpoints verified successfully."
+          )
           PY
 
-      # ==========================================================
-      # CREATE DISTILLATION DIRECTORY
-      # ==========================================================
 
-      - name: Create distillation directory
+      # ============================================================
+      # 10. CREATE DIRECTORIES
+      # ============================================================
+
+      - name: Create project directories
         run: |
           mkdir -p distillation
           mkdir -p reports
 
-      # ==========================================================
-      # CREATE MOBILE STUDENT
-      # ==========================================================
+
+      # ============================================================
+      # 11. CREATE MOBILE STUDENT
+      # ============================================================
 
       - name: Create mobile student
         run: |
           cat > distillation/mobile_student.py <<'PY'
+
           import torch
           import torch.nn as nn
 
@@ -177,7 +221,9 @@ jobs:
                           padding=1
                       ),
 
-                      nn.ReLU(inplace=True),
+                      nn.ReLU(
+                          inplace=True
+                      ),
 
                       nn.Conv2d(
                           width,
@@ -187,7 +233,9 @@ jobs:
                           padding=1
                       ),
 
-                      nn.ReLU(inplace=True),
+                      nn.ReLU(
+                          inplace=True
+                      ),
 
                       nn.Conv2d(
                           width * 2,
@@ -197,7 +245,9 @@ jobs:
                           padding=1
                       ),
 
-                      nn.ReLU(inplace=True),
+                      nn.ReLU(
+                          inplace=True
+                      ),
 
                       nn.Conv2d(
                           width * 4,
@@ -207,7 +257,9 @@ jobs:
                           padding=1
                       ),
 
-                      nn.ReLU(inplace=True),
+                      nn.ReLU(
+                          inplace=True
+                      ),
 
                       nn.Conv2d(
                           width * 4,
@@ -217,8 +269,13 @@ jobs:
                           padding=1
                       ),
 
-                      nn.ReLU(inplace=True)
+                      nn.ReLU(
+                          inplace=True
+                      )
                   )
+
+
+                  # Geometry / occupancy head
 
                   self.geometry_head = nn.Sequential(
 
@@ -228,7 +285,9 @@ jobs:
                           kernel_size=1
                       ),
 
-                      nn.ReLU(inplace=True),
+                      nn.ReLU(
+                          inplace=True
+                      ),
 
                       nn.Conv2d(
                           width * 2,
@@ -236,6 +295,9 @@ jobs:
                           kernel_size=1
                       )
                   )
+
+
+                  # RGB color head
 
                   self.color_head = nn.Sequential(
 
@@ -245,7 +307,9 @@ jobs:
                           kernel_size=1
                       ),
 
-                      nn.ReLU(inplace=True),
+                      nn.ReLU(
+                          inplace=True
+                      ),
 
                       nn.Conv2d(
                           width * 2,
@@ -261,12 +325,16 @@ jobs:
 
                   features = self.encoder(x)
 
-                  geometry = self.geometry_head(
-                      features
+                  geometry = (
+                      self.geometry_head(
+                          features
+                      )
                   )
 
-                  color = self.color_head(
-                      features
+                  color = (
+                      self.color_head(
+                          features
+                      )
                   )
 
                   return geometry, color
@@ -285,7 +353,7 @@ jobs:
 
               print()
               print("==========================================")
-              print("MOBILE STUDENT")
+              print("MOBILE PIFuHDC STUDENT")
               print("==========================================")
 
               print(
@@ -301,6 +369,7 @@ jobs:
                   )
               )
 
+
               x = torch.randn(
                   1,
                   3,
@@ -308,9 +377,11 @@ jobs:
                   256
               )
 
+
               with torch.no_grad():
 
                   geometry, color = model(x)
+
 
               print(
                   "Input:",
@@ -327,8 +398,15 @@ jobs:
                   tuple(color.shape)
               )
 
-              fp32_bytes = parameters * 4
-              fp16_bytes = parameters * 2
+
+              fp32_bytes = (
+                  parameters * 4
+              )
+
+              fp16_bytes = (
+                  parameters * 2
+              )
+
 
               print(
                   "Estimated FP32 weights:",
@@ -347,41 +425,59 @@ jobs:
                   ),
                   "MB"
               )
+
+
+              print()
+              print(
+                  "Student architecture test passed."
+              )
+
           PY
 
-      # ==========================================================
-      # TEST STUDENT ARCHITECTURE
-      # ==========================================================
+
+      # ============================================================
+      # 12. TEST STUDENT
+      # ============================================================
 
       - name: Test mobile student
         run: |
           python distillation/mobile_student.py
 
-      # ==========================================================
-      # SYNTHETIC DISTILLATION PROTOTYPE
-      # ==========================================================
+
+      # ============================================================
+      # 13. SYNTHETIC DISTILLATION PROTOTYPE
+      # ============================================================
 
       - name: Run synthetic distillation experiment
         run: |
           cat > distillation/distill_prototype.py <<'PY'
+
           import torch
           import torch.nn.functional as F
 
-          from mobile_student import MobilePIFuStudent
+          from mobile_student import (
+              MobilePIFuStudent
+          )
 
 
           torch.manual_seed(42)
 
-          device = torch.device("cpu")
+
+          device = torch.device(
+              "cpu"
+          )
+
 
           student = MobilePIFuStudent(
               width=32
           ).to(device)
 
+
           optimizer = torch.optim.Adam(
               student.parameters(),
               lr=1e-3
           )
+
 
           print()
           print("==========================================")
@@ -389,6 +485,7 @@ jobs:
           print("==========================================")
 
           print()
+
           print(
               "This is a technical prototype."
           )
@@ -405,7 +502,9 @@ jobs:
 
           print()
 
+
           for step in range(20):
+
 
               x = torch.randn(
                   1,
@@ -415,9 +514,6 @@ jobs:
                   device=device
               )
 
-              # --------------------------------------------------
-              # Synthetic target
-              # --------------------------------------------------
 
               with torch.no_grad():
 
@@ -428,7 +524,11 @@ jobs:
                       )
                   )
 
-                  target_color = torch.tanh(x)
+
+                  target_color = torch.tanh(
+                      x
+                  )
+
 
                   target_color = F.avg_pool2d(
                       target_color,
@@ -436,15 +536,11 @@ jobs:
                       stride=16
                   )
 
-              # --------------------------------------------------
-              # Student
-              # --------------------------------------------------
 
-              geometry, color = student(x)
+              geometry, color = student(
+                  x
+              )
 
-              # --------------------------------------------------
-              # Resize targets
-              # --------------------------------------------------
 
               target_geometry = F.interpolate(
                   target_geometry,
@@ -453,6 +549,7 @@ jobs:
                   align_corners=False
               )
 
+
               target_color = F.interpolate(
                   target_color,
                   size=color.shape[-2:],
@@ -460,34 +557,31 @@ jobs:
                   align_corners=False
               )
 
-              # --------------------------------------------------
-              # Loss
-              # --------------------------------------------------
 
               loss_geometry = F.mse_loss(
                   geometry,
                   target_geometry
               )
 
+
               loss_color = F.mse_loss(
                   color,
                   target_color
               )
+
 
               loss = (
                   loss_geometry +
                   loss_color
               )
 
-              # --------------------------------------------------
-              # Backpropagation
-              # --------------------------------------------------
 
               optimizer.zero_grad()
 
               loss.backward()
 
               optimizer.step()
+
 
               if (
                   step == 0
@@ -502,39 +596,45 @@ jobs:
                       float(loss)
                   )
 
+
           print()
+
           print(
               "Synthetic distillation test completed."
           )
 
-          # Because this script runs from the repository root,
-          # save directly into the distillation directory.
 
           output = (
               "distillation/"
               "mobile_student_prototype.pt"
           )
 
+
           torch.save(
               student.state_dict(),
               output
           )
 
+
           print(
               "Saved:",
               output
           )
+
           PY
+
 
           python distillation/distill_prototype.py
 
-      # ==========================================================
-      # VERIFY STUDENT CHECKPOINT
-      # ==========================================================
+
+      # ============================================================
+      # 14. VERIFY FP32 STUDENT
+      # ============================================================
 
       - name: Verify student checkpoint
         run: |
           python - <<'PY'
+
           import os
 
           path = (
@@ -542,36 +642,61 @@ jobs:
               "mobile_student_prototype.pt"
           )
 
+
           print()
           print("==========================================")
-          print("STUDENT CHECKPOINT")
+          print("FP32 STUDENT CHECKPOINT")
           print("==========================================")
 
+
           if not os.path.exists(path):
+
               raise RuntimeError(
                   "Student checkpoint was not created."
               )
 
-          size = os.path.getsize(path)
 
-          print("File:", path)
-          print("Bytes:", size)
-          print(
-              "MB:",
-              round(size / 1024 / 1024, 2)
+          size = os.path.getsize(
+              path
           )
 
+
+          print(
+              "File:",
+              path
+          )
+
+          print(
+              "Bytes:",
+              size
+          )
+
+          print(
+              "MB:",
+              round(
+                  size / 1024 / 1024,
+                  2
+              )
+          )
+
+
           print()
-          print("Student checkpoint verified.")
+
+          print(
+              "FP32 student checkpoint verified."
+          )
+
           PY
 
-      # ==========================================================
-      # EXPORT FP16 STUDENT
-      # ==========================================================
+
+      # ============================================================
+      # 15. EXPORT FP16
+      # ============================================================
 
       - name: Export FP16 student
         run: |
           python - <<'PY'
+
           import os
           import torch
 
@@ -579,50 +704,76 @@ jobs:
               MobilePIFuStudent
           )
 
+
           checkpoint = (
               "distillation/"
               "mobile_student_prototype.pt"
           )
+
 
           output = (
               "distillation/"
               "mobile_student_fp16.pt"
           )
 
+
           model = MobilePIFuStudent(
               width=32
           )
+
 
           state = torch.load(
               checkpoint,
               map_location="cpu"
           )
 
-          model.load_state_dict(state)
+
+          model.load_state_dict(
+              state
+          )
+
 
           model.eval()
 
+
+          # Convert weights to FP16.
+          #
+          # This is an export operation.
+          # CPU Conv2D inference with Half is NOT
+          # attempted here because standard PyTorch
+          # CPU backend does not implement it reliably.
+
           model.half()
+
 
           torch.save(
               model.state_dict(),
               output
           )
 
+
           print()
           print("==========================================")
           print("FP16 EXPORT")
           print("==========================================")
+
 
           for path in [
               checkpoint,
               output
           ]:
 
-              size = os.path.getsize(path)
+              size = os.path.getsize(
+                  path
+              )
+
 
               print()
-              print("File:", path)
+
+              print(
+                  "File:",
+                  path
+              )
 
               print(
                   "Bytes:",
@@ -637,81 +788,218 @@ jobs:
                   )
               )
 
+
           print()
-          print("FP16 export completed.")
+
+          print(
+              "FP16 export completed successfully."
+          )
+
           PY
 
-      # ==========================================================
-      # TEST FP16 STUDENT
-      # ==========================================================
 
-      - name: Test FP16 student
+      # ============================================================
+      # 16. VALIDATE FP16 CHECKPOINT
+      # ============================================================
+
+      - name: Validate FP16 student
         run: |
           python - <<'PY'
+
           import torch
 
           from distillation.mobile_student import (
               MobilePIFuStudent
           )
 
+
           checkpoint = (
               "distillation/"
               "mobile_student_fp16.pt"
           )
 
+
           model = MobilePIFuStudent(
               width=32
           )
+
 
           state = torch.load(
               checkpoint,
               map_location="cpu"
           )
 
-          model.load_state_dict(state)
+
+          model.load_state_dict(
+              state
+          )
+
+
+          print()
+          print("==========================================")
+          print("FP16 STUDENT VALIDATION")
+          print("==========================================")
+
+
+          fp16_tensors = 0
+
+          total_tensors = 0
+
+
+          for name, tensor in state.items():
+
+              if torch.is_tensor(tensor):
+
+                  total_tensors += 1
+
+
+                  if tensor.dtype == torch.float16:
+
+                      fp16_tensors += 1
+
+
+                  print(
+                      name,
+                      "dtype=",
+                      tensor.dtype,
+                      "shape=",
+                      tuple(tensor.shape)
+                  )
+
+
+          print()
+
+          print(
+              "FP16 tensors:",
+              fp16_tensors,
+              "/",
+              total_tensors
+          )
+
+
+          if fp16_tensors == 0:
+
+              raise RuntimeError(
+                  "FP16 checkpoint validation failed."
+              )
+
+
+          if fp16_tensors != total_tensors:
+
+              raise RuntimeError(
+                  "Not all model tensors are FP16."
+              )
+
+
+          print()
+
+          print(
+              "All model tensors are FP16."
+          )
+
+
+          # --------------------------------------------------------
+          # IMPORTANT
+          # --------------------------------------------------------
+          #
+          # GitHub Actions uses CPU PyTorch.
+          #
+          # Standard PyTorch CPU Conv2D does not support
+          # Half/FP16 reliably:
+          #
+          # slow_conv2d_cpu not implemented for 'Half'
+          #
+          # Therefore we DO NOT run:
+          #
+          # model.half()
+          # model(x.half())
+          #
+          # on the GitHub CPU.
+          #
+          # Instead, we verify the FP16 weights above and
+          # run a separate FP32 CPU compatibility inference.
+          #
+          # Actual mobile FP16 inference will happen later
+          # through ONNX/MNN/mobile acceleration.
+
+          # --------------------------------------------------------
+          # CPU compatibility inference
+          # --------------------------------------------------------
+
+          model.float()
 
           model.eval()
 
-          model.half()
 
           x = torch.randn(
               1,
               3,
               256,
               256
-          ).half()
+          )
+
 
           with torch.no_grad():
 
-              geometry, color = model(x)
+              geometry, color = model(
+                  x
+              )
+
 
           print()
-          print("==========================================")
-          print("FP16 STUDENT TEST")
-          print("==========================================")
+
+          print(
+              "CPU compatibility inference passed."
+          )
+
 
           print(
               "Input:",
               tuple(x.shape)
           )
 
+
           print(
               "Geometry:",
               tuple(geometry.shape)
           )
+
 
           print(
               "Color:",
               tuple(color.shape)
           )
 
+
           print()
-          print("FP16 inference test passed.")
+
+          print(
+              "FP16 checkpoint is valid."
+          )
+
+
+          print(
+              "GitHub CPU FP16 Conv2D test was "
+              "intentionally skipped."
+          )
+
+
+          print()
+
+          print(
+              "Next mobile stage:"
+          )
+
+          print(
+              "FP16 -> ONNX/MNN -> Android"
+          )
+
           PY
 
-      # ==========================================================
-      # CREATE REPORT
-      # ==========================================================
+
+      # ============================================================
+      # 17. CREATE REPORT
+      # ============================================================
 
       - name: Create distillation report
         if: always()
@@ -722,40 +1010,110 @@ jobs:
             echo "PIFuHDC MOBILE DISTILLATION PROTOTYPE"
             echo "======================================"
             echo
+
             echo "TEACHER CHECKPOINTS"
             echo "-------------------"
-            ls -lh pifuhdc/checkpoints/
+
+            ls -lh \
+              pifuhdc/checkpoints/
+
             echo
+
             echo "STUDENT CHECKPOINTS"
             echo "-------------------"
-            ls -lh distillation/
+
+            ls -lh \
+              distillation/
+
             echo
+
             echo "STATUS"
             echo "------"
+
             echo "Student architecture test completed."
+
             echo
+
+            echo "Synthetic training completed."
+
+            echo
+
+            echo "FP32 student checkpoint created."
+
+            echo
+
+            echo "FP16 student checkpoint created."
+
+            echo
+
+            echo "FP16 checkpoint tensors validated."
+
+            echo
+
+            echo "GitHub CPU FP16 Conv2D test skipped"
+            echo "because PyTorch CPU does not implement"
+            echo "Half Conv2D."
+
+            echo
+
             echo "IMPORTANT"
-            echo "This is NOT yet a production PIFuHDC"
-            echo "replacement."
+            echo "---------"
+
+            echo "This is NOT yet a production"
+            echo "PIFuHDC replacement."
+
             echo
+
+            echo "The current student was trained using"
+            echo "synthetic targets."
+
+            echo
+
             echo "The next stage must use actual"
             echo "PIFuHDC teacher outputs/data."
+
+            echo
+
+            echo "TARGET MOBILE PIPELINE"
+            echo "----------------------"
+
+            echo "PIFuHDC teacher"
+            echo "      ->"
+            echo "teacher geometry + color"
+            echo "      ->"
+            echo "mobile student"
+            echo "      ->"
+            echo "FP16 / INT8"
+            echo "      ->"
+            echo "ONNX / MNN"
+            echo "      ->"
+            echo "Android ARM64"
+            echo "      ->"
+            echo "3D human + texture"
+
           } > reports/distillation_report.txt
+
 
           cat reports/distillation_report.txt
 
-      # ==========================================================
-      # UPLOAD STUDENT ARTIFACT
-      # ==========================================================
+
+      # ============================================================
+      # 18. UPLOAD ONLY SMALL STUDENT ARTIFACTS
+      # ============================================================
 
       - name: Upload student prototype
         if: always()
         uses: actions/upload-artifact@v4
+
         with:
+
           name: pifuhdc-mobile-distillation-prototype
+
           path: |
             distillation/mobile_student_prototype.pt
             distillation/mobile_student_fp16.pt
             reports/distillation_report.txt
+
           if-no-files-found: warn
+
           retention-days: 7
