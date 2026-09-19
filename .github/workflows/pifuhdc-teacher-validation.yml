@@ -19,7 +19,10 @@ jobs:
 
       - name: Install system packages
         run: |
+          set -e
+
           sudo apt-get update
+
           sudo apt-get install -y \
             ffmpeg \
             freeglut3-dev \
@@ -29,6 +32,8 @@ jobs:
 
       - name: Install Python packages
         run: |
+          set -e
+
           python -m pip install --upgrade pip
 
           pip install \
@@ -58,6 +63,11 @@ jobs:
           git clone --depth 1 \
             https://github.com/xiahongchi/PIFuHDC.git \
             pifuhdc
+
+          test -d pifuhdc
+
+          echo "Official PIFuHDC repository:"
+          ls -la pifuhdc
 
       - name: Prepare directories
         run: |
@@ -119,7 +129,8 @@ jobs:
             exit 1
           fi
 
-          cp checkpoints/net_C_HD.pt checkpoints/net_C_choice2.pt
+          cp checkpoints/net_C_HD.pt \
+             checkpoints/net_C_choice2.pt
 
           echo "PIFuHDC color checkpoint downloaded successfully."
 
@@ -139,45 +150,65 @@ jobs:
           test -f checkpoints/net_C_HD.pt
           test -f checkpoints/net_C_choice2.pt
 
+          echo ""
           echo "PIFuHD:"
           ls -lh checkpoints/pifuhd.pt
 
+          echo ""
           echo "PIFuHDC Color:"
           ls -lh checkpoints/net_C_HD.pt
 
+          echo ""
           echo "Color compatibility copy:"
           ls -lh checkpoints/net_C_choice2.pt
 
+          echo ""
           echo "SHA256:"
           sha256sum \
             checkpoints/pifuhd.pt \
             checkpoints/net_C_HD.pt \
             checkpoints/net_C_choice2.pt
 
-      - name: Download sample human image
+      - name: Download official PIFuHDC sample image
         run: |
           set -e
 
           echo "=========================================="
-          echo "DOWNLOADING TEST HUMAN IMAGE"
+          echo "DOWNLOADING OFFICIAL PIFuHDC SAMPLE"
           echo "=========================================="
 
           wget \
-            "https://raw.githubusercontent.com/facebookresearch/pifuhd/master/sample_images/cxk.jpg" \
+            "https://raw.githubusercontent.com/xiahongchi/PIFuHDC/main/images/cxk.jpg" \
             -O teacher_input/sample.jpg
 
           test -s teacher_input/sample.jpg
 
-          echo "Sample image downloaded:"
+          echo ""
+          echo "Downloaded sample:"
           file teacher_input/sample.jpg
           ls -lh teacher_input/sample.jpg
+
+      - name: Validate sample image
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "VALIDATING SAMPLE IMAGE"
+          echo "=========================================="
+
+          python -c "from PIL import Image; im=Image.open('teacher_input/sample.jpg'); print('Format:',im.format); print('Size:',im.size); print('Mode:',im.mode); im.verify(); print('IMAGE VALIDATION PASSED')"
 
       - name: Create rectangle metadata
         run: |
           set -e
 
+          echo "=========================================="
+          echo "CREATING RECTANGLE METADATA"
+          echo "=========================================="
+
           python -c "from PIL import Image; im=Image.open('teacher_input/sample.jpg'); w,h=im.size; open('teacher_input/sample_rect.txt','w').write('0 0 %d %d\n' % (w,h)); print('Image size:',w,'x',h); print('Rectangle:',0,0,w,h)"
 
+          echo ""
           echo "Rectangle metadata:"
           cat teacher_input/sample_rect.txt
 
@@ -192,6 +223,7 @@ jobs:
           test -f teacher_input/sample.jpg
           test -f teacher_input/sample_rect.txt
 
+          echo ""
           ls -lh teacher_input/
 
       - name: Validate EvalDataset
@@ -199,12 +231,20 @@ jobs:
         run: |
           set -e
 
+          echo "=========================================="
+          echo "VALIDATING EVAL DATASET"
+          echo "=========================================="
+
           python -c "from lib.data.EvalDataset import EvalDataset; O=type('Opt',(),{'dataroot':'../teacher_input','loadSize':1024}); d=EvalDataset(O()); print('Dataset length:',len(d)); assert len(d)==1; print('EvalDataset PASSED')"
 
       - name: Validate Python imports
         working-directory: pifuhdc
         run: |
           set -e
+
+          echo "=========================================="
+          echo "VALIDATING PYTHON IMPORTS"
+          echo "=========================================="
 
           python -c "import torch,cv2,PIL,skimage,trimesh,matplotlib; print('PyTorch:',torch.__version__); print('OpenCV:',cv2.__version__); print('Pillow:',PIL.__version__); print('scikit-image:',skimage.__version__); print('trimesh:',trimesh.__version__); print('matplotlib:',matplotlib.__version__); print('IMPORT VALIDATION PASSED')"
 
@@ -238,9 +278,11 @@ jobs:
             exit 1
           fi
 
+          echo ""
           echo "Generated files:"
           find teacher_output -type f -print
 
+          echo ""
           echo "Output size:"
           du -sh teacher_output
 
@@ -257,8 +299,10 @@ jobs:
           echo "OBJ count: $OBJ_COUNT"
 
           if [ "$OBJ_COUNT" -eq 0 ]; then
+            echo ""
             echo "ERROR: No OBJ mesh generated."
 
+            echo ""
             echo "Searching entire workspace:"
             find . -type f \
               \( -iname "*.obj" -o -iname "*.ply" \) \
@@ -269,6 +313,7 @@ jobs:
 
           while IFS= read -r OBJ; do
 
+            echo ""
             echo "------------------------------------------"
             echo "MESH: $OBJ"
             echo "------------------------------------------"
@@ -301,6 +346,10 @@ jobs:
         run: |
           set -e
 
+          echo "=========================================="
+          echo "TRIMESH VALIDATION"
+          echo "=========================================="
+
           python -c "import glob,trimesh; files=glob.glob('teacher_output/**/*.obj',recursive=True); print('OBJ files:',files); assert files,'No OBJ files found'; [(print('Loading:',p),print('Vertices:',len((m:=trimesh.load(p,force='mesh',process=False)).vertices)),print('Faces:',len(m.faces)),print('Bounds:',m.bounds),print('TRIMESH VALIDATION PASSED')) for p in files]"
 
       - name: Create teacher report
@@ -311,7 +360,7 @@ jobs:
             'PIFuHDC REAL TEACHER VALIDATION' \
             '================================' \
             'Teacher: PIFuHD geometry + PIFuHDC color' \
-            'Input: teacher_input/sample.jpg' \
+            'Input: official PIFuHDC images/cxk.jpg' \
             'Mode: Rectangle' \
             'Resolution: 256' \
             'Output: teacher_output/' \
