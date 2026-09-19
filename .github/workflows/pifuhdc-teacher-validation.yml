@@ -108,7 +108,10 @@ jobs:
           print("CUDA available:", torch.cuda.is_available())
 
           if torch.cuda.is_available():
-              print("GPU:", torch.cuda.get_device_name(0))
+              print(
+                  "GPU:",
+                  torch.cuda.get_device_name(0)
+              )
 
           print("")
           print("Environment OK.")
@@ -130,7 +133,11 @@ jobs:
 
           echo ""
           echo "PIFuHDC repository:"
-          find pifuhdc -maxdepth 2 -type f | sort | head -200
+          find pifuhdc \
+            -maxdepth 2 \
+            -type f \
+            | sort \
+            | head -200
 
 
       # ============================================================
@@ -234,7 +241,9 @@ jobs:
           from pathlib import Path
           from PIL import Image
 
-          image_path = Path("teacher_input/sample.jpg")
+          image_path = Path(
+              "teacher_input/sample.jpg"
+          )
 
           image = Image.open(image_path)
 
@@ -251,7 +260,9 @@ jobs:
 
           image.verify()
 
-          rect = Path("teacher_input/sample_rect.txt")
+          rect = Path(
+              "teacher_input/sample_rect.txt"
+          )
 
           rect.write_text(
               f"0 0 {width} {height}\n"
@@ -270,12 +281,10 @@ jobs:
 
 
       # ============================================================
-      # SAFE PIFUHDC IMPORT TEST
+      # VERIFY PIFUHDC MODULES
       #
-      # IMPORTANT:
-      # DO NOT import apps.test_colorHD here.
-      #
-      # test_colorHD.py executes inference at import time.
+      # Do NOT import apps.test_colorHD.
+      # It executes inference during import.
       # ============================================================
 
       - name: Verify PIFuHDC modules
@@ -308,57 +317,7 @@ jobs:
 
 
       # ============================================================
-      # FIX COLOR CHECKPOINT NAME
-      #
-      # PIFuHDC internally defaults to:
-      #
-      # checkpoints/net_C_choice2.pt
-      #
-      # We downloaded:
-      #
-      # checkpoints/net_C_HD.pt
-      #
-      # Make the internal default point to the real downloaded file.
-      # ============================================================
-
-      - name: Configure color checkpoint
-        working-directory: pifuhdc
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path("apps/test_colorHD.py")
-          text = path.read_text()
-
-          print("==========================================")
-          print("CONFIGURING COLOR CHECKPOINT")
-          print("==========================================")
-
-          print("test_colorHD.py:", path.exists())
-
-          if not path.exists():
-              raise SystemExit(
-                  "apps/test_colorHD.py was not found"
-              )
-
-          # We do not modify test_colorHD.py's execution logic.
-          # Instead, recon.py is patched below so the actual
-          # color loader uses net_C_HD.pt.
-
-          print("test_colorHD.py found.")
-          print("Color loader will be configured in recon.py.")
-          PY
-
-
-      # ============================================================
       # PATCH recon.py COLOR CHECKPOINT
-      #
-      # This is the important fix for:
-      #
-      # failed loading color state dict!
-      # checkpoints/net_C_choice2.pt
-      #
       # ============================================================
 
       - name: Configure recon.py color checkpoint
@@ -368,7 +327,10 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          path = Path("apps/recon.py")
+          path = Path(
+              "apps/recon.py"
+          )
+
           text = path.read_text()
 
           print("==========================================")
@@ -386,24 +348,28 @@ jobs:
 
               path.write_text(text)
 
-              print("")
               print("Changed:")
               print(old)
-
               print("")
               print("To:")
               print("checkpoints/net_C_HD.pt")
 
           else:
 
+              print(
+                  "net_C_choice2.pt not found."
+              )
+
               print("")
-              print("Default net_C_choice2.pt was not found.")
-              print("Searching recon.py for color checkpoint references:")
+              print(
+                  "Existing color references:"
+              )
 
               for number, line in enumerate(
                   text.splitlines(),
                   1
               ):
+
                   if (
                       "net_C_" in line
                       or
@@ -411,35 +377,27 @@ jobs:
                       or
                       "state_dict_path_Color" in line
                   ):
+
                       print(
                           f"{number}: {line}"
                       )
 
-
-      # ============================================================
-      # VERIFY COLOR CHECKPOINT PATCH
-      # ============================================================
-
-      - name: Verify color checkpoint configuration
-        working-directory: pifuhdc
-        run: |
-          echo "=========================================="
-          echo "COLOR CHECKPOINT CONFIGURATION"
-          echo "=========================================="
-
-          grep -n \
-            -E \
-            "net_C_|ckpt_path_Color|state_dict_path_Color" \
-            apps/recon.py \
-            || true
-
-          echo ""
-          echo "Available color checkpoints:"
-          ls -lh checkpoints/*C* 2>/dev/null || true
+              print("")
+              print(
+                  "This may already be configured."
+              )
+          PY
 
 
       # ============================================================
-      # PATCH ONLY MARCHING CUBES DIAGNOSTICS
+      # PATCH MARCHING CUBES
+      #
+      # IMPORTANT:
+      # This modifies the CLONED official file:
+      #
+      # pifuhdc/lib/mesh_util.py
+      #
+      # It does NOT create a mesh_util.py in our repository.
       # ============================================================
 
       - name: Patch Marching Cubes diagnostics
@@ -449,106 +407,155 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          path = Path("lib/mesh_util.py")
+          path = Path(
+              "lib/mesh_util.py"
+          )
+
+          if not path.exists():
+              raise SystemExit(
+                  "ERROR: pifuhdc/lib/mesh_util.py not found"
+              )
+
           text = path.read_text()
 
           print("==========================================")
-          print("PATCHING MARCHING CUBES")
+          print("MARCHING CUBES PATCH")
           print("==========================================")
 
-          target = (
-              "    except:\n"
-              "        print('error cannot marching cubes')\n"
-              "        return -1"
+          print(
+              "File:",
+              path
           )
 
-          replacement = (
-              "    except Exception as e:\n"
-              "        print('')\n"
-              "        print('==========================================')\n"
-              "        print('MARCHING CUBES INTERNAL EXCEPTION')\n"
-              "        print('==========================================')\n"
-              "        print('Exception type:', type(e).__name__)\n"
-              "        print('Exception message:', str(e))\n"
-              "        print('')\n"
-              "        print('scikit-image version:')\n"
-              "        try:\n"
-              "            import skimage\n"
-              "            print(skimage.__version__)\n"
-              "        except Exception:\n"
-              "            print('Unable to determine scikit-image version')\n"
-              "        print('')\n"
-              "        print('SDF diagnostics:')\n"
-              "        try:\n"
-              "            print('SDF shape:', sdf.shape)\n"
-              "            print('SDF dtype:', sdf.dtype)\n"
-              "            print('SDF min:', float(np.nanmin(sdf)))\n"
-              "            print('SDF max:', float(np.nanmax(sdf)))\n"
-              "            print('SDF mean:', float(np.nanmean(sdf)))\n"
-              "            print('SDF NaN count:', int(np.isnan(sdf).sum()))\n"
-              "            print('SDF Inf count:', int(np.isinf(sdf).sum()))\n"
-              "            print('SDF finite count:', int(np.isfinite(sdf).sum()))\n"
-              "            print('SDF total count:', int(sdf.size))\n"
-              "        except Exception as diag_error:\n"
-              "            print('SDF diagnostics failed:', type(diag_error).__name__, str(diag_error))\n"
-              "        print('')\n"
-              "        print('Marching Cubes threshold:', thresh)\n"
-              "        print('')\n"
-              "        print('FULL TRACEBACK')\n"
-              "        print('------------------------------------------')\n"
-              "        import traceback\n"
-              "        traceback.print_exc()\n"
-              "        print('==========================================')\n"
-              "        raise"
+          print(
+              "Original size:",
+              len(text),
+              "bytes"
           )
 
-          if target not in text:
+          old = """    except:
+        print('error cannot marching cubes')
+        return -1"""
+
+          new = """    except Exception as e:
+        print('')
+        print('==========================================')
+        print('MARCHING CUBES INTERNAL EXCEPTION')
+        print('==========================================')
+        print('Exception type:', type(e).__name__)
+        print('Exception message:', str(e))
+        print('')
+        print('scikit-image version:')
+        try:
+            import skimage
+            print(skimage.__version__)
+        except Exception:
+            print('Unable to determine scikit-image version')
+        print('')
+        print('FULL TRACEBACK')
+        print('------------------------------------------')
+        import traceback
+        traceback.print_exc()
+        print('==========================================')
+        raise"""
+
+          if old not in text:
+
               print("")
-              print("Marching Cubes handler not found.")
-              print("Current exception handlers:")
+              print(
+                  "Expected exception block was not found."
+              )
+
+              print("")
+              print(
+                  "Searching for Marching Cubes code:"
+              )
+
+              lines = text.splitlines()
 
               for number, line in enumerate(
-                  text.splitlines(),
+                  lines,
                   1
               ):
-                  if "except" in line:
-                      print(
-                          f"{number}: {line}"
+
+                  lower = line.lower()
+
+                  if (
+                      "marching" in lower
+                      or
+                      "marching_cubes" in lower
+                      or
+                      "cannot marching" in lower
+                      or
+                      "except:" in lower
+                  ):
+
+                      start = max(
+                          1,
+                          number - 3
                       )
 
-              raise SystemExit(1)
+                      end = min(
+                          len(lines),
+                          number + 5
+                      )
+
+                      print(
+                          f"\n--- lines {start}-{end} ---"
+                      )
+
+                      for i in range(
+                          start,
+                          end + 1
+                      ):
+
+                          print(
+                              f"{i}: {lines[i-1]}"
+                          )
+
+              raise SystemExit(
+                  "Patch stopped safely."
+              )
 
           text = text.replace(
-              target,
-              replacement,
+              old,
+              new,
               1
           )
 
           path.write_text(text)
 
           print("")
-          print("Marching Cubes diagnostics installed.")
+          print(
+              "Marching Cubes diagnostic patch applied."
+          )
+
+          print(
+              "New size:",
+              len(text),
+              "bytes"
+          )
           PY
 
 
       # ============================================================
-      # VERIFY MARCHING CUBES PATCH
+      # SHOW PATCHED FILE
       # ============================================================
 
-      - name: Verify Marching Cubes patch
+      - name: Verify patched mesh_util.py
         working-directory: pifuhdc
         run: |
           echo "=========================================="
-          echo "MARCHING CUBES PATCH"
+          echo "PATCHED mesh_util.py"
           echo "=========================================="
 
           grep -n \
-            -A45 \
+            -A25 \
             "MARCHING CUBES INTERNAL EXCEPTION" \
             lib/mesh_util.py
 
           echo ""
-          echo "Patch OK."
+          echo "Patch verification complete."
 
 
       # ============================================================
@@ -561,7 +568,9 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          input_dir = Path("../teacher_input")
+          input_dir = Path(
+              "../teacher_input"
+          )
 
           print("==========================================")
           print("DATASET")
@@ -570,14 +579,25 @@ jobs:
           image = input_dir / "sample.jpg"
           rect = input_dir / "sample_rect.txt"
 
-          print("Image exists:", image.exists())
-          print("Rect exists:", rect.exists())
+          print(
+              "Image exists:",
+              image.exists()
+          )
+
+          print(
+              "Rect exists:",
+              rect.exists()
+          )
 
           if not image.exists():
-              raise SystemExit("sample.jpg missing")
+              raise SystemExit(
+                  "sample.jpg missing"
+              )
 
           if not rect.exists():
-              raise SystemExit("sample_rect.txt missing")
+              raise SystemExit(
+                  "sample_rect.txt missing"
+              )
 
           print("")
           print("Rect contents:")
@@ -590,14 +610,6 @@ jobs:
 
       # ============================================================
       # RUN REAL PIFUHDC
-      #
-      # IMPORTANT:
-      #
-      # python -m apps.test_colorHD
-      #
-      # NOT:
-      #
-      # python apps/test_colorHD.py
       # ============================================================
 
       - name: Run real PIFuHDC teacher
@@ -708,7 +720,10 @@ jobs:
               Path("teacher_output").rglob("*.obj")
           )
 
-          print("OBJ count:", len(objs))
+          print(
+              "OBJ count:",
+              len(objs)
+          )
 
           if not objs:
               print("")
@@ -741,10 +756,22 @@ jobs:
 
               print("")
               print("File:", obj)
-              print("Size:", obj.stat().st_size)
-              print("Vertices:", vertices)
-              print("Faces:", faces)
-              print("Colored vertices:", colored)
+              print(
+                  "Size:",
+                  obj.stat().st_size
+              )
+              print(
+                  "Vertices:",
+                  vertices
+              )
+              print(
+                  "Faces:",
+                  faces
+              )
+              print(
+                  "Colored vertices:",
+                  colored
+              )
 
               if vertices == 0:
                   raise SystemExit(
@@ -757,8 +784,9 @@ jobs:
                   )
 
           print("")
-          print("OBJ VALIDATION PASSED.")
-          PY
+          print(
+              "OBJ VALIDATION PASSED."
+          )
 
 
       # ============================================================
@@ -781,13 +809,20 @@ jobs:
           )
 
           if not objs:
-              print("No OBJ to validate.")
+
+              print(
+                  "No OBJ to validate."
+              )
+
               raise SystemExit(0)
 
           for obj in objs:
 
               print("")
-              print("Loading:", obj)
+              print(
+                  "Loading:",
+                  obj
+              )
 
               mesh = trimesh.load(
                   obj,
@@ -820,8 +855,9 @@ jobs:
                   )
 
           print("")
-          print("TRIMESH VALIDATION PASSED.")
-          PY
+          print(
+              "TRIMESH VALIDATION PASSED."
+          )
 
 
       # ============================================================
