@@ -7,7 +7,7 @@ on:
       - main
 
 jobs:
-  validate-pifuhdc-teacher:
+  pifuhdc-teacher:
     runs-on: ubuntu-latest
 
     steps:
@@ -24,17 +24,17 @@ jobs:
       # PYTHON
       # ============================================================
 
-      - name: Setup Python 3.10
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
 
       # ============================================================
-      # SYSTEM DEPENDENCIES
+      # SYSTEM PACKAGES
       # ============================================================
 
-      - name: Install system dependencies
+      - name: Install system packages
         run: |
           sudo apt-get update
 
@@ -51,10 +51,10 @@ jobs:
 
 
       # ============================================================
-      # PYTHON DEPENDENCIES
+      # PYTHON PACKAGES
       # ============================================================
 
-      - name: Install Python dependencies
+      - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
 
@@ -76,10 +76,10 @@ jobs:
 
 
       # ============================================================
-      # VERIFY ENVIRONMENT
+      # ENVIRONMENT CHECK
       # ============================================================
 
-      - name: Verify Python environment
+      - name: Check environment
         run: |
           python - <<'PY'
           import sys
@@ -92,7 +92,7 @@ jobs:
           import PIL
 
           print("==========================================")
-          print("PYTHON ENVIRONMENT")
+          print("ENVIRONMENT")
           print("==========================================")
 
           print("Python:", sys.version)
@@ -108,7 +108,6 @@ jobs:
           print("CUDA available:", torch.cuda.is_available())
 
           if torch.cuda.is_available():
-              print("CUDA version:", torch.version.cuda)
               print("GPU:", torch.cuda.get_device_name(0))
 
           print("")
@@ -117,10 +116,10 @@ jobs:
 
 
       # ============================================================
-      # CLONE OFFICIAL PIFUHDC
+      # CLONE PIFUHDC
       # ============================================================
 
-      - name: Clone official PIFuHDC
+      - name: Clone PIFuHDC
         run: |
           rm -rf pifuhdc
 
@@ -129,13 +128,9 @@ jobs:
             https://github.com/xiahongchi/PIFuHDC.git \
             pifuhdc
 
-          echo "PIFuHDC cloned."
-
-          cd pifuhdc
-
           echo ""
-          echo "Repository:"
-          find . -maxdepth 2 -type f | sort | head -200
+          echo "PIFuHDC repository:"
+          find pifuhdc -maxdepth 2 -type f | sort | head -200
 
 
       # ============================================================
@@ -152,46 +147,46 @@ jobs:
 
 
       # ============================================================
-      # GEOMETRY CHECKPOINT
+      # DOWNLOAD GEOMETRY TEACHER
       # ============================================================
 
       - name: Download PIFuHD geometry checkpoint
         working-directory: pifuhdc
         run: |
-          echo "Downloading PIFuHD geometry checkpoint..."
+          echo "=========================================="
+          echo "DOWNLOADING GEOMETRY TEACHER"
+          echo "=========================================="
 
-          wget -q \
+          wget \
             --show-progress \
             https://dl.fbaipublicfiles.com/pifuhd/checkpoints/pifuhd.pt \
             -O checkpoints/pifuhd.pt
 
-          echo ""
-          echo "Geometry checkpoint:"
-          ls -lh checkpoints/pifuhd.pt
-
           test -s checkpoints/pifuhd.pt
+
+          echo ""
+          ls -lh checkpoints/pifuhd.pt
 
 
       # ============================================================
-      # COLOR CHECKPOINT
+      # DOWNLOAD COLOR TEACHER
       # ============================================================
 
       - name: Download PIFuHDC color checkpoint
         working-directory: pifuhdc
         run: |
-          echo "Downloading PIFuHDC color checkpoint..."
-
-          python -m pip install -q gdown
+          echo "=========================================="
+          echo "DOWNLOADING COLOR TEACHER"
+          echo "=========================================="
 
           gdown \
             1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM \
             -O checkpoints/net_C_HD.pt
 
-          echo ""
-          echo "Color checkpoint:"
-          ls -lh checkpoints/net_C_HD.pt
-
           test -s checkpoints/net_C_HD.pt
+
+          echo ""
+          ls -lh checkpoints/net_C_HD.pt
 
 
       # ============================================================
@@ -208,26 +203,29 @@ jobs:
           ls -lah checkpoints
 
           echo ""
-          echo "Geometry:"
+          echo "Geometry checkpoint:"
           du -h checkpoints/pifuhd.pt
 
           echo ""
-          echo "Color:"
+          echo "Color checkpoint:"
           du -h checkpoints/net_C_HD.pt
 
 
       # ============================================================
-      # PREPARE OFFICIAL SAMPLE
+      # PREPARE INPUT
       # ============================================================
 
-      - name: Prepare official PIFuHDC sample
+      - name: Prepare teacher input
         run: |
+          rm -rf teacher_input
+          rm -rf teacher_output
+
           mkdir -p teacher_input
           mkdir -p teacher_output
 
           echo "Downloading official PIFuHDC sample..."
 
-          wget -q \
+          wget \
             --show-progress \
             https://raw.githubusercontent.com/xiahongchi/PIFuHDC/main/images/cxk.jpg \
             -O teacher_input/sample.jpg
@@ -243,40 +241,44 @@ jobs:
           width, height = image.size
 
           print("==========================================")
-          print("TEACHER INPUT")
+          print("INPUT IMAGE")
           print("==========================================")
 
-          print("Image:", image_path)
+          print("Path:", image_path)
           print("Width:", width)
           print("Height:", height)
           print("Mode:", image.mode)
 
           image.verify()
 
-          rect_path = Path("teacher_input/sample_rect.txt")
+          rect = Path("teacher_input/sample_rect.txt")
 
-          rect_path.write_text(
+          rect.write_text(
               f"0 0 {width} {height}\n"
           )
 
           print("")
-          print("Created:", rect_path)
-          print(rect_path.read_text())
+          print("Rectangle file:")
+          print(rect.read_text())
 
           print("")
-          print("Input validation OK.")
+          print("Input OK.")
           PY
 
           echo ""
-          echo "Input files:"
           ls -lah teacher_input
 
 
       # ============================================================
-      # VERIFY PIFUHDC IMPORTS
+      # SAFE PIFUHDC IMPORT TEST
+      #
+      # IMPORTANT:
+      # DO NOT import apps.test_colorHD here.
+      #
+      # test_colorHD.py executes inference at import time.
       # ============================================================
 
-      - name: Verify PIFuHDC imports
+      - name: Verify PIFuHDC modules
         working-directory: pifuhdc
         run: |
           python - <<'PY'
@@ -285,7 +287,7 @@ jobs:
           sys.path.insert(0, ".")
 
           print("==========================================")
-          print("PIFuHDC IMPORT TEST")
+          print("PIFuHDC MODULE TEST")
           print("==========================================")
 
           import lib
@@ -293,17 +295,154 @@ jobs:
           import lib.options
           import apps
           import apps.recon
-          import apps.test_colorHD
 
-          print("PIFuHDC imports: OK")
+          print("lib: OK")
+          print("mesh_util: OK")
+          print("options: OK")
+          print("apps: OK")
+          print("recon: OK")
+
+          print("")
+          print("PIFuHDC modules loaded successfully.")
           PY
 
 
       # ============================================================
-      # PATCH mesh_util.py
+      # FIX COLOR CHECKPOINT NAME
+      #
+      # PIFuHDC internally defaults to:
+      #
+      # checkpoints/net_C_choice2.pt
+      #
+      # We downloaded:
+      #
+      # checkpoints/net_C_HD.pt
+      #
+      # Make the internal default point to the real downloaded file.
       # ============================================================
 
-      - name: Patch mesh_util.py for Marching Cubes diagnostics
+      - name: Configure color checkpoint
+        working-directory: pifuhdc
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("apps/test_colorHD.py")
+          text = path.read_text()
+
+          print("==========================================")
+          print("CONFIGURING COLOR CHECKPOINT")
+          print("==========================================")
+
+          print("test_colorHD.py:", path.exists())
+
+          if not path.exists():
+              raise SystemExit(
+                  "apps/test_colorHD.py was not found"
+              )
+
+          # We do not modify test_colorHD.py's execution logic.
+          # Instead, recon.py is patched below so the actual
+          # color loader uses net_C_HD.pt.
+
+          print("test_colorHD.py found.")
+          print("Color loader will be configured in recon.py.")
+          PY
+
+
+      # ============================================================
+      # PATCH recon.py COLOR CHECKPOINT
+      #
+      # This is the important fix for:
+      #
+      # failed loading color state dict!
+      # checkpoints/net_C_choice2.pt
+      #
+      # ============================================================
+
+      - name: Configure recon.py color checkpoint
+        working-directory: pifuhdc
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("apps/recon.py")
+          text = path.read_text()
+
+          print("==========================================")
+          print("PATCHING recon.py COLOR CHECKPOINT")
+          print("==========================================")
+
+          old = "checkpoints/net_C_choice2.pt"
+
+          if old in text:
+
+              text = text.replace(
+                  old,
+                  "checkpoints/net_C_HD.pt"
+              )
+
+              path.write_text(text)
+
+              print("")
+              print("Changed:")
+              print(old)
+
+              print("")
+              print("To:")
+              print("checkpoints/net_C_HD.pt")
+
+          else:
+
+              print("")
+              print("Default net_C_choice2.pt was not found.")
+              print("Searching recon.py for color checkpoint references:")
+
+              for number, line in enumerate(
+                  text.splitlines(),
+                  1
+              ):
+                  if (
+                      "net_C_" in line
+                      or
+                      "ckpt_path_Color" in line
+                      or
+                      "state_dict_path_Color" in line
+                  ):
+                      print(
+                          f"{number}: {line}"
+                      )
+
+
+      # ============================================================
+      # VERIFY COLOR CHECKPOINT PATCH
+      # ============================================================
+
+      - name: Verify color checkpoint configuration
+        working-directory: pifuhdc
+        run: |
+          echo "=========================================="
+          echo "COLOR CHECKPOINT CONFIGURATION"
+          echo "=========================================="
+
+          grep -n \
+            -E \
+            "net_C_|ckpt_path_Color|state_dict_path_Color" \
+            apps/recon.py \
+            || true
+
+          echo ""
+          echo "Available color checkpoints:"
+          ls -lh checkpoints/*C* 2>/dev/null || true
+
+
+      # ============================================================
+      # PATCH ONLY MARCHING CUBES DIAGNOSTICS
+      # ============================================================
+
+      - name: Patch Marching Cubes diagnostics
         working-directory: pifuhdc
         shell: bash
         run: |
@@ -314,10 +453,14 @@ jobs:
           text = path.read_text()
 
           print("==========================================")
-          print("PATCHING mesh_util.py")
+          print("PATCHING MARCHING CUBES")
           print("==========================================")
 
-          target = "    except:\n        print('error cannot marching cubes')\n        return -1"
+          target = (
+              "    except:\n"
+              "        print('error cannot marching cubes')\n"
+              "        return -1"
+          )
 
           replacement = (
               "    except Exception as e:\n"
@@ -347,7 +490,7 @@ jobs:
               "            print('SDF finite count:', int(np.isfinite(sdf).sum()))\n"
               "            print('SDF total count:', int(sdf.size))\n"
               "        except Exception as diag_error:\n"
-              "            print('Could not inspect SDF:', type(diag_error).__name__, str(diag_error))\n"
+              "            print('SDF diagnostics failed:', type(diag_error).__name__, str(diag_error))\n"
               "        print('')\n"
               "        print('Marching Cubes threshold:', thresh)\n"
               "        print('')\n"
@@ -361,140 +504,100 @@ jobs:
 
           if target not in text:
               print("")
-              print("ERROR: Marching Cubes handler was not found.")
-              print("")
-              print("Exception handlers currently present:")
+              print("Marching Cubes handler not found.")
+              print("Current exception handlers:")
 
-              for number, line in enumerate(text.splitlines(), 1):
+              for number, line in enumerate(
+                  text.splitlines(),
+                  1
+              ):
                   if "except" in line:
-                      print(f"{number}: {line}")
+                      print(
+                          f"{number}: {line}"
+                      )
 
               raise SystemExit(1)
 
-          text = text.replace(target, replacement, 1)
+          text = text.replace(
+              target,
+              replacement,
+              1
+          )
 
           path.write_text(text)
 
           print("")
-          print("Marching Cubes diagnostic patch applied successfully.")
+          print("Marching Cubes diagnostics installed.")
           PY
 
 
       # ============================================================
-      # VERIFY mesh_util PATCH
+      # VERIFY MARCHING CUBES PATCH
       # ============================================================
 
-      - name: Verify mesh_util.py patch
+      - name: Verify Marching Cubes patch
         working-directory: pifuhdc
         run: |
           echo "=========================================="
-          echo "VERIFYING mesh_util.py PATCH"
+          echo "MARCHING CUBES PATCH"
           echo "=========================================="
 
           grep -n \
             -A45 \
-            -B5 \
             "MARCHING CUBES INTERNAL EXCEPTION" \
             lib/mesh_util.py
 
           echo ""
-          echo "Patch verification complete."
-
-
-      # ============================================================
-      # PATCH recon.py
-      # ============================================================
-
-      - name: Patch recon.py diagnostics
-        working-directory: pifuhdc
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path("apps/recon.py")
-          text = path.read_text()
-
-          print("==========================================")
-          print("PATCHING recon.py")
-          print("==========================================")
-
-          marker = "        verts, faces, _, _ = reconstruction("
-
-          if marker in text:
-              text = text.replace(
-                  marker,
-                  "        print('Starting reconstruction()...')\n"
-                  + marker,
-                  1
-              )
-
-              path.write_text(text)
-
-              print("recon.py diagnostic patch applied.")
-          else:
-              print("reconstruction marker not found.")
-              print("Continuing without secondary recon.py patch.")
-          PY
+          echo "Patch OK."
 
 
       # ============================================================
       # VERIFY DATASET
       # ============================================================
 
-      - name: Verify PIFuHDC dataset
+      - name: Verify teacher dataset
         working-directory: pifuhdc
         run: |
-          echo "=========================================="
-          echo "DATASET TEST"
-          echo "=========================================="
-
           python - <<'PY'
           from pathlib import Path
 
           input_dir = Path("../teacher_input")
 
-          print("Input directory:", input_dir)
+          print("==========================================")
+          print("DATASET")
+          print("==========================================")
 
-          for item in sorted(input_dir.iterdir()):
-              print(
-                  item,
-                  item.stat().st_size,
-                  "bytes"
-              )
+          image = input_dir / "sample.jpg"
+          rect = input_dir / "sample_rect.txt"
 
-          print("")
-          print(
-              "sample.jpg:",
-              (input_dir / "sample.jpg").exists()
-          )
+          print("Image exists:", image.exists())
+          print("Rect exists:", rect.exists())
 
-          print(
-              "sample_rect.txt:",
-              (input_dir / "sample_rect.txt").exists()
-          )
-
-          if not (input_dir / "sample.jpg").exists():
+          if not image.exists():
               raise SystemExit("sample.jpg missing")
 
-          if not (input_dir / "sample_rect.txt").exists():
+          if not rect.exists():
               raise SystemExit("sample_rect.txt missing")
 
           print("")
-          print("Dataset preparation OK.")
+          print("Rect contents:")
+          print(rect.read_text())
+
+          print("")
+          print("Dataset OK.")
           PY
 
 
       # ============================================================
-      # RUN REAL PIFUHDC TEACHER
+      # RUN REAL PIFUHDC
       #
       # IMPORTANT:
-      # Use -m apps.test_colorHD instead of
+      #
+      # python -m apps.test_colorHD
+      #
+      # NOT:
+      #
       # python apps/test_colorHD.py
-      #
-      # This fixes the relative-import problem:
-      #
-      # from .recon import reconColorHDWrapper
       # ============================================================
 
       - name: Run real PIFuHDC teacher
@@ -506,7 +609,7 @@ jobs:
           echo "=========================================="
 
           echo ""
-          echo "Input files:"
+          echo "Input:"
           ls -lah ../teacher_input
 
           echo ""
@@ -514,7 +617,7 @@ jobs:
           ls -lh checkpoints
 
           echo ""
-          echo "Starting PIFuHDC inference..."
+          echo "Starting inference..."
           echo ""
 
           python -m apps.test_colorHD \
@@ -525,16 +628,9 @@ jobs:
             --resolution 256 \
             --use_rect
 
-          EXIT_CODE=$?
-
-          echo ""
-          echo "PIFuHDC EXIT CODE: ${EXIT_CODE}"
-
-          exit ${EXIT_CODE}
-
 
       # ============================================================
-      # INSPECT OUTPUT
+      # OUTPUT INSPECTION
       # ============================================================
 
       - name: Inspect teacher output
@@ -545,35 +641,32 @@ jobs:
           echo "=========================================="
 
           if [ -d teacher_output ]; then
+
             find teacher_output \
               -type f \
               -printf "%p %s bytes\n" \
               | sort
+
           else
-            echo "teacher_output directory does not exist."
+
+            echo "teacher_output does not exist."
+
           fi
 
-          echo ""
-          echo "Output tree:"
-          find teacher_output \
-            -maxdepth 6 \
-            -print \
-            2>/dev/null || true
-
 
       # ============================================================
-      # FIND GENERATED MESHES
+      # SEARCH FOR MESH
       # ============================================================
 
-      - name: Find generated meshes
+      - name: Search generated mesh
         if: always()
         run: |
           echo "=========================================="
-          echo "SEARCHING FOR MESHES"
+          echo "GENERATED MESHES"
           echo "=========================================="
 
           echo ""
-          echo "OBJ files:"
+          echo "OBJ:"
           find teacher_output \
             -type f \
             -iname "*.obj" \
@@ -581,7 +674,7 @@ jobs:
             2>/dev/null || true
 
           echo ""
-          echo "PLY files:"
+          echo "PLY:"
           find teacher_output \
             -type f \
             -iname "*.ply" \
@@ -589,7 +682,7 @@ jobs:
             2>/dev/null || true
 
           echo ""
-          echo "GLB files:"
+          echo "GLB:"
           find teacher_output \
             -type f \
             -iname "*.glb" \
@@ -615,22 +708,18 @@ jobs:
               Path("teacher_output").rglob("*.obj")
           )
 
-          print("OBJ files found:", len(objs))
+          print("OBJ count:", len(objs))
 
           if not objs:
               print("")
-              print("NO OBJ GENERATED.")
-              print("Teacher validation did not produce a mesh.")
+              print("No OBJ generated.")
               raise SystemExit(0)
 
           for obj in objs:
-              print("")
-              print("OBJ:", obj)
-              print("Size:", obj.stat().st_size, "bytes")
 
               vertices = 0
               faces = 0
-              colored_vertices = 0
+              colored = 0
 
               with obj.open(
                   "r",
@@ -638,49 +727,49 @@ jobs:
               ) as f:
 
                   for line in f:
+
                       if line.startswith("v "):
+
                           vertices += 1
 
-                          parts = line.split()
-
-                          if len(parts) >= 7:
-                              colored_vertices += 1
+                          if len(line.split()) >= 7:
+                              colored += 1
 
                       elif line.startswith("f "):
+
                           faces += 1
 
+              print("")
+              print("File:", obj)
+              print("Size:", obj.stat().st_size)
               print("Vertices:", vertices)
               print("Faces:", faces)
-              print(
-                  "Colored vertices:",
-                  colored_vertices
-              )
+              print("Colored vertices:", colored)
 
               if vertices == 0:
                   raise SystemExit(
-                      f"OBJ has no vertices: {obj}"
+                      "OBJ has zero vertices."
                   )
 
               if faces == 0:
                   raise SystemExit(
-                      f"OBJ has no faces: {obj}"
+                      "OBJ has zero faces."
                   )
 
           print("")
-          print("OBJ validation passed.")
+          print("OBJ VALIDATION PASSED.")
           PY
 
 
       # ============================================================
-      # VALIDATE MESH WITH TRIMESH
+      # TRIMESH VALIDATION
       # ============================================================
 
-      - name: Validate mesh geometry
+      - name: Validate mesh with trimesh
         if: always()
         run: |
           python - <<'PY'
           from pathlib import Path
-
           import trimesh
 
           print("==========================================")
@@ -692,7 +781,7 @@ jobs:
           )
 
           if not objs:
-              print("No OBJ files found.")
+              print("No OBJ to validate.")
               raise SystemExit(0)
 
           for obj in objs:
@@ -700,60 +789,46 @@ jobs:
               print("")
               print("Loading:", obj)
 
-              try:
-                  mesh = trimesh.load(
-                      obj,
-                      force="mesh",
-                      process=False
+              mesh = trimesh.load(
+                  obj,
+                  force="mesh",
+                  process=False
+              )
+
+              print(
+                  "Vertices:",
+                  len(mesh.vertices)
+              )
+
+              print(
+                  "Faces:",
+                  len(mesh.faces)
+              )
+
+              print("")
+              print("Bounds:")
+              print(mesh.bounds)
+
+              if len(mesh.vertices) == 0:
+                  raise SystemExit(
+                      "Mesh has no vertices."
                   )
 
-                  print(
-                      "Vertices:",
-                      len(mesh.vertices)
+              if len(mesh.faces) == 0:
+                  raise SystemExit(
+                      "Mesh has no faces."
                   )
 
-                  print(
-                      "Faces:",
-                      len(mesh.faces)
-                  )
-
-                  if len(mesh.vertices) == 0:
-                      raise RuntimeError(
-                          "Mesh contains zero vertices"
-                      )
-
-                  if len(mesh.faces) == 0:
-                      raise RuntimeError(
-                          "Mesh contains zero faces"
-                      )
-
-                  print("")
-                  print("Bounds:")
-                  print(mesh.bounds)
-
-                  print("")
-                  print("Mesh validation OK.")
-
-              except Exception as e:
-                  print("")
-                  print("TRIMESH ERROR")
-                  print(
-                      "Exception type:",
-                      type(e).__name__
-                  )
-                  print(
-                      "Exception:",
-                      str(e)
-                  )
-
-                  raise
+          print("")
+          print("TRIMESH VALIDATION PASSED.")
+          PY
 
 
       # ============================================================
       # UPLOAD RESULTS
       # ============================================================
 
-      - name: Upload PIFuHDC teacher results
+      - name: Upload teacher results
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -761,36 +836,39 @@ jobs:
           path: |
             teacher_input/
             teacher_output/
-            pifuhdc/lib/mesh_util.py
             pifuhdc/apps/recon.py
+            pifuhdc/apps/test_colorHD.py
+            pifuhdc/lib/mesh_util.py
           if-no-files-found: warn
           retention-days: 7
 
 
       # ============================================================
-      # FINAL STATUS
+      # FINAL SUMMARY
       # ============================================================
 
-      - name: Final teacher validation status
+      - name: Final summary
         if: always()
         run: |
           echo "=========================================="
-          echo "PIFuHDC TEACHER VALIDATION FINISHED"
+          echo "PIFuHDC TEACHER VALIDATION"
           echo "=========================================="
 
           echo ""
-          echo "Input:"
+          echo "Input files:"
           find teacher_input \
             -type f \
             -printf "%p %s bytes\n" \
             2>/dev/null || true
 
           echo ""
-          echo "Output:"
+          echo "Output files:"
           find teacher_output \
             -type f \
             -printf "%p %s bytes\n" \
             2>/dev/null || true
 
           echo ""
-          echo "Teacher validation complete."
+          echo "=========================================="
+          echo "END"
+          echo "=========================================="
