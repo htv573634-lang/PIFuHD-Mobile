@@ -83,7 +83,7 @@ jobs:
             https://github.com/xiahongchi/PIFuHDC.git \
             pifuhdc
 
-      - name: Prepare checkpoint directory
+      - name: Prepare checkpoints
         run: |
           mkdir -p pifuhdc/checkpoints
 
@@ -105,7 +105,7 @@ jobs:
             "https://drive.google.com/uc?id=1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM" \
             -O pifuhdc/checkpoints/net_C_HD.pt
 
-      - name: Create official default color checkpoint alias
+      - name: Create compatibility color checkpoint
         run: |
           cp \
             pifuhdc/checkpoints/net_C_HD.pt \
@@ -113,18 +113,14 @@ jobs:
 
           echo
           echo "=========================================="
-          echo "COLOR CHECKPOINT ALIAS"
+          echo "COLOR CHECKPOINTS"
           echo "=========================================="
 
           ls -lh \
             pifuhdc/checkpoints/net_C_HD.pt \
             pifuhdc/checkpoints/net_C_choice2.pt
 
-          echo
-          echo "Both filenames point to the same downloaded"
-          echo "PIFuHDC color checkpoint."
-
-      - name: Verify teacher checkpoints
+      - name: Verify checkpoints
         run: |
           python - <<'PY'
           import os
@@ -138,55 +134,61 @@ jobs:
 
           print()
           print("==========================================")
-          print("TEACHER CHECKPOINT VERIFICATION")
+          print("CHECKPOINT VERIFICATION")
           print("==========================================")
 
           for path in paths:
               if not os.path.exists(path):
-                  raise RuntimeError("Missing checkpoint: " + path)
+                  raise RuntimeError("Missing: " + path)
 
               size = os.path.getsize(path)
 
-              sha256 = hashlib.sha256()
+              sha = hashlib.sha256()
 
               with open(path, "rb") as f:
-                  for block in iter(lambda: f.read(1024 * 1024), b""):
-                      sha256.update(block)
+                  for block in iter(
+                      lambda: f.read(1024 * 1024),
+                      b""
+                  ):
+                      sha.update(block)
 
               print()
               print("File:", path)
               print("Bytes:", size)
               print("MB:", round(size / 1024 / 1024, 2))
-              print("SHA256:", sha256.hexdigest())
+              print("SHA256:", sha.hexdigest())
 
-          hd = hashlib.sha256(
-              open(
-                  "pifuhdc/checkpoints/net_C_HD.pt",
-                  "rb"
-              ).read()
-          ).hexdigest()
+          def sha256(path):
+              h = hashlib.sha256()
 
-          choice2 = hashlib.sha256(
-              open(
-                  "pifuhdc/checkpoints/net_C_choice2.pt",
-                  "rb"
-              ).read()
-          ).hexdigest()
+              with open(path, "rb") as f:
+                  for block in iter(
+                      lambda: f.read(1024 * 1024),
+                      b""
+                  ):
+                      h.update(block)
 
-          print()
-          print("Color checkpoint hashes identical:", hd == choice2)
+              return h.hexdigest()
 
-          if hd != choice2:
+          if sha256(
+              "pifuhdc/checkpoints/net_C_HD.pt"
+          ) != sha256(
+              "pifuhdc/checkpoints/net_C_choice2.pt"
+          ):
               raise RuntimeError(
-                  "net_C_HD.pt and net_C_choice2.pt differ."
+                  "Color checkpoint alias mismatch."
               )
 
           print()
-          print("Teacher checkpoints verified.")
+          print("All checkpoints verified.")
           PY
 
-      - name: Prepare input and output directories
+      - name: Prepare directories
         run: |
+          rm -rf teacher_input
+          rm -rf teacher_output
+          rm -rf reports
+
           mkdir -p teacher_input
           mkdir -p teacher_output
           mkdir -p reports
@@ -204,27 +206,7 @@ jobs:
 
           ls -lh teacher_input/
 
-      - name: Inspect input image
-        run: |
-          python - <<'PY'
-          from PIL import Image
-
-          path = "teacher_input/sample.jpg"
-
-          image = Image.open(path)
-
-          print()
-          print("==========================================")
-          print("IMAGE INFORMATION")
-          print("==========================================")
-          print("Format:", image.format)
-          print("Size:", image.size)
-          print("Mode:", image.mode)
-          print()
-          print("Input image loaded successfully.")
-          PY
-
-      - name: Create rectangle crop metadata
+      - name: Create rectangle metadata
         run: |
           python - <<'PY'
           from PIL import Image
@@ -237,87 +219,100 @@ jobs:
 
           width, height = image.size
 
-          # Full-image square crop.
-          side = max(width, height)
-
-          x = (width - side) // 2
-          y = (height - side) // 2
-
+          # Full image rectangle.
           rect = np.array(
-              [[x, y, side, side]],
+              [0, 0, width, height],
               dtype=np.int32
           )
 
           np.savetxt(
               rect_path,
-              rect,
+              rect[None, :],
               fmt="%d"
           )
 
           print()
           print("==========================================")
-          print("RECTANGLE METADATA")
+          print("RECTANGLE")
           print("==========================================")
           print("Image:", width, "x", height)
-          print("Rect:", rect.tolist())
-          print("Saved:", rect_path)
+          print("Rectangle:", rect.tolist())
+          print("File:", rect_path)
+          print()
+
+          with open(rect_path) as f:
+              print(f.read())
           PY
 
-          cat teacher_input/sample_rect.txt
+      - name: Verify rectangle dataset
+        working-directory: pifuhdc
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+
+          sys.path.insert(
+              0,
+              os.getcwd()
+          )
+
+          from lib.data.EvalDataset import EvalDataset
+
+          class Opt:
+              dataroot = "../teacher_input"
+              loadSize = 1024
+
+          dataset = EvalDataset(Opt())
+
+          print()
+          print("==========================================")
+          print("RECTANGLE DATASET TEST")
+          print("==========================================")
+          print("Dataset root:", dataset.root)
+          print("Images:", dataset.img_files)
+          print("Dataset size:", len(dataset))
+          print()
+
+          if len(dataset) != 1:
+              raise RuntimeError(
+                  "Rectangle dataset did not find exactly one image."
+              )
+
+          print("EvalDataset is working.")
+          print("Rectangle mode is ready.")
+          PY
 
       - name: Verify PIFuHDC imports
         working-directory: pifuhdc
         run: |
           python - <<'PY'
-          import apps.test_colorHD
           import apps.recon
 
           print()
           print("==========================================")
           print("PIFuHDC IMPORT TEST")
           print("==========================================")
-          print("test_colorHD import: OK")
-          print("recon import: OK")
+          print("apps.recon: OK")
           print()
-          print("PIFuHDC Python modules loaded.")
+          print("PIFuHDC modules loaded.")
           PY
 
-      - name: Verify checkpoint argument handling
-        working-directory: pifuhdc
+      - name: Verify inference files
         run: |
-          python - <<'PY'
-          import sys
+          echo
+          echo "=========================================="
+          echo "INFERENCE INPUT CHECK"
+          echo "=========================================="
 
-          sys.argv = [
-              "apps.test_colorHD",
-              "--input_path",
-              "../teacher_input",
-              "--out_path",
-              "../teacher_output",
-              "--ckpt_path",
-              "./checkpoints/pifuhd.pt",
-              "--ckpt_path_Color",
-              "./checkpoints/net_C_HD.pt",
-              "--resolution",
-              "256",
-              "--use_rect"
-          ]
+          test -f teacher_input/sample.jpg
+          test -f teacher_input/sample_rect.txt
+          test -f pifuhdc/checkpoints/pifuhd.pt
+          test -f pifuhdc/checkpoints/net_C_HD.pt
 
-          import apps.test_colorHD
-
-          print()
-          print("==========================================")
-          print("CHECKPOINT ARGUMENT TEST")
-          print("==========================================")
-          print("Geometry checkpoint:")
-          print("./checkpoints/pifuhd.pt")
-          print()
-          print("Color checkpoint:")
-          print("./checkpoints/net_C_HD.pt")
-          print()
-          print("Rectangle mode:")
-          print("enabled")
-          PY
+          echo "sample.jpg: OK"
+          echo "sample_rect.txt: OK"
+          echo "pifuhd.pt: OK"
+          echo "net_C_HD.pt: OK"
 
       - name: Run real PIFuHDC teacher
         working-directory: pifuhdc
@@ -326,25 +321,26 @@ jobs:
           echo "=========================================="
           echo "REAL PIFuHDC TEACHER INFERENCE"
           echo "=========================================="
-
+          echo
+          echo "Input:"
+          echo "../teacher_input"
+          echo
+          echo "Output:"
+          echo "../teacher_output"
           echo
           echo "Geometry:"
-          echo "checkpoints/pifuhd.pt"
-
+          echo "./checkpoints/pifuhd.pt"
           echo
           echo "Color:"
-          echo "checkpoints/net_C_HD.pt"
-
+          echo "./checkpoints/net_C_HD.pt"
           echo
           echo "Resolution:"
           echo "256"
-
           echo
-          echo "Crop mode:"
-          echo "rectangle"
-
+          echo "Mode:"
+          echo "RECTANGLE / EvalDataset"
           echo
-          echo "Starting inference..."
+          echo "Starting..."
           echo
 
           python -m apps.test_colorHD \
@@ -363,17 +359,17 @@ jobs:
           echo "TEACHER OUTPUT"
           echo "=========================================="
 
-          if [ -d "teacher_output" ]; then
+          if [ -d teacher_output ]; then
             find teacher_output \
               -maxdepth 8 \
               -type f \
               -printf "%p %s bytes\n" \
               | sort
           else
-            echo "teacher_output directory does not exist."
+            echo "No teacher_output directory."
           fi
 
-      - name: Validate generated mesh
+      - name: Validate generated OBJ
         if: success()
         run: |
           python - <<'PY'
@@ -392,7 +388,7 @@ jobs:
 
           if not paths:
               raise RuntimeError(
-                  "PIFuHDC completed but no OBJ mesh was found."
+                  "No OBJ mesh generated."
               )
 
           for path in paths:
@@ -402,15 +398,15 @@ jobs:
               print("OBJ:", path)
               print("Bytes:", size)
 
-              if size == 0:
+              if size <= 0:
                   raise RuntimeError(
-                      "Generated OBJ is empty: " + path
+                      "Empty OBJ: " + path
                   )
 
           print()
-          print("REAL 3D MESH GENERATED SUCCESSFULLY.")
+          print("REAL PIFuHDC MESH GENERATED.")
 
-      - name: Analyze generated mesh
+      - name: Analyze mesh
         if: success()
         run: |
           python - <<'PY'
@@ -423,13 +419,12 @@ jobs:
 
           print()
           print("==========================================")
-          print("PIFuHDC MESH ANALYSIS")
+          print("MESH ANALYSIS")
           print("==========================================")
 
           for path in paths:
               vertices = 0
               faces = 0
-              vertex_colors = 0
 
               with open(
                   path,
@@ -444,53 +439,45 @@ jobs:
                       elif line.startswith("f "):
                           faces += 1
 
-                      elif line.startswith("vc "):
-                          vertex_colors += 1
-
               print()
               print("File:", path)
               print("Vertices:", vertices)
               print("Faces:", faces)
-              print("Vertex colors:", vertex_colors)
 
           print()
           print("Mesh analysis completed.")
 
-      - name: Create validation report
+      - name: Create report
         if: always()
         run: |
           {
             echo "REAL PIFuHDC TEACHER VALIDATION"
             echo "================================"
             echo
-            echo "Teacher:"
-            echo "PIFuHD geometry + PIFuHDC color"
+            echo "Geometry:"
+            echo "PIFuHD pifuhd.pt"
+            echo
+            echo "Color:"
+            echo "PIFuHDC net_C_HD.pt"
             echo
             echo "Resolution:"
             echo "256"
             echo
-            echo "Color checkpoint:"
-            echo "net_C_HD.pt"
+            echo "Dataset:"
+            echo "EvalDataset / rectangle mode"
             echo
-            echo "Compatibility alias:"
-            echo "net_C_choice2.pt"
-            echo
-            echo "Crop:"
-            echo "rectangle"
-            echo
-            echo "Checkpoint files:"
+            echo "Checkpoints:"
             ls -lh pifuhdc/checkpoints/
             echo
-            echo "Teacher output:"
+            echo "Input:"
+            ls -lh teacher_input/
+            echo
+            echo "Output:"
             find teacher_output \
               -maxdepth 8 \
               -type f \
               -printf "%p %s bytes\n" \
               2>/dev/null || true
-            echo
-            echo "Purpose:"
-            echo "Validate real PIFuHDC teacher output"
-            echo "before production student distillation."
           } > reports/teacher_validation.txt
 
           cat reports/teacher_validation.txt
