@@ -35,7 +35,8 @@ jobs:
             scipy \
             pillow \
             opencv-python-headless \
-            tqdm
+            tqdm \
+            gdown
 
           pip install \
             torch==2.1.2 \
@@ -55,12 +56,20 @@ jobs:
             pifuhdc
 
       # ==========================================================
-      # DOWNLOAD TEACHER CHECKPOINTS
+      # PREPARE CHECKPOINTS
       # ==========================================================
 
       - name: Prepare checkpoints
         run: |
           mkdir -p pifuhdc/checkpoints
+
+          rm -f pifuhdc/checkpoints/pifuhd.pt
+          rm -f pifuhdc/checkpoints/pifuhd.pt.1
+          rm -f pifuhdc/checkpoints/net_C_HD.pt
+
+      # ==========================================================
+      # DOWNLOAD PIFuHD TEACHER
+      # ==========================================================
 
       - name: Download PIFuHD teacher
         run: |
@@ -69,16 +78,18 @@ jobs:
             -O pifuhdc/checkpoints/pifuhd.pt \
             https://dl.fbaipublicfiles.com/pifuhd/checkpoints/pifuhd.pt
 
+      # ==========================================================
+      # DOWNLOAD PIFuHDC COLOR TEACHER
+      # ==========================================================
+
       - name: Download PIFuHDC color teacher
         run: |
-          pip install gdown
-
           gdown \
             "https://drive.google.com/uc?id=1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM" \
             -O pifuhdc/checkpoints/net_C_HD.pt
 
       # ==========================================================
-      # VERIFY TEACHERS
+      # VERIFY TEACHER CHECKPOINTS
       # ==========================================================
 
       - name: Verify teacher checkpoints
@@ -99,106 +110,206 @@ jobs:
           total = 0
 
           for path in files:
+
               if not os.path.exists(path):
-                  raise RuntimeError("Missing: " + path)
+                  raise RuntimeError(
+                      "Missing checkpoint: " + path
+                  )
 
               size = os.path.getsize(path)
               total += size
 
-              print(path)
-              print(" bytes:", size)
-              print(" MB:", round(size / 1024 / 1024, 2))
               print()
+              print("File:", path)
+              print("Bytes:", size)
+              print(
+                  "MB:",
+                  round(size / 1024 / 1024, 2)
+              )
+              print(
+                  "GB:",
+                  round(size / 1024 / 1024 / 1024, 3)
+              )
 
-          print("Total teacher size MB:",
-                round(total / 1024 / 1024, 2))
+          print()
+          print(
+              "Total teacher size MB:",
+              round(total / 1024 / 1024, 2)
+          )
+
+          print()
+          print("Teacher checkpoints verified.")
           PY
+
+      # ==========================================================
+      # CREATE DISTILLATION DIRECTORY
+      # ==========================================================
+
+      - name: Create distillation directory
+        run: |
+          mkdir -p distillation
+          mkdir -p reports
 
       # ==========================================================
       # CREATE MOBILE STUDENT
       # ==========================================================
 
-      - name: Create student distillation program
+      - name: Create mobile student
         run: |
-          mkdir -p distillation
-
           cat > distillation/mobile_student.py <<'PY'
           import torch
           import torch.nn as nn
 
 
           class MobilePIFuStudent(nn.Module):
-              """
-              Prototype mobile student.
-
-              This is intentionally small and is NOT yet claimed
-              to reproduce PIFuHDC quality.
-
-              It provides the compact architecture that we will
-              later train using real teacher targets.
-              """
 
               def __init__(self, width=32):
+
                   super().__init__()
 
                   self.encoder = nn.Sequential(
-                      nn.Conv2d(3, width, 3, 2, 1),
+
+                      nn.Conv2d(
+                          3,
+                          width,
+                          kernel_size=3,
+                          stride=2,
+                          padding=1
+                      ),
+
                       nn.ReLU(inplace=True),
 
-                      nn.Conv2d(width, width * 2, 3, 2, 1),
+                      nn.Conv2d(
+                          width,
+                          width * 2,
+                          kernel_size=3,
+                          stride=2,
+                          padding=1
+                      ),
+
                       nn.ReLU(inplace=True),
 
-                      nn.Conv2d(width * 2, width * 4, 3, 2, 1),
+                      nn.Conv2d(
+                          width * 2,
+                          width * 4,
+                          kernel_size=3,
+                          stride=2,
+                          padding=1
+                      ),
+
                       nn.ReLU(inplace=True),
 
-                      nn.Conv2d(width * 4, width * 4, 3, 2, 1),
+                      nn.Conv2d(
+                          width * 4,
+                          width * 4,
+                          kernel_size=3,
+                          stride=2,
+                          padding=1
+                      ),
+
                       nn.ReLU(inplace=True),
 
-                      nn.Conv2d(width * 4, width * 4, 3, 1, 1),
+                      nn.Conv2d(
+                          width * 4,
+                          width * 4,
+                          kernel_size=3,
+                          stride=1,
+                          padding=1
+                      ),
+
                       nn.ReLU(inplace=True)
                   )
 
                   self.geometry_head = nn.Sequential(
-                      nn.Conv2d(width * 4, width * 2, 1),
+
+                      nn.Conv2d(
+                          width * 4,
+                          width * 2,
+                          kernel_size=1
+                      ),
+
                       nn.ReLU(inplace=True),
-                      nn.Conv2d(width * 2, 1, 1)
+
+                      nn.Conv2d(
+                          width * 2,
+                          1,
+                          kernel_size=1
+                      )
                   )
 
                   self.color_head = nn.Sequential(
-                      nn.Conv2d(width * 4, width * 2, 1),
+
+                      nn.Conv2d(
+                          width * 4,
+                          width * 2,
+                          kernel_size=1
+                      ),
+
                       nn.ReLU(inplace=True),
-                      nn.Conv2d(width * 2, 3, 1),
+
+                      nn.Conv2d(
+                          width * 2,
+                          3,
+                          kernel_size=1
+                      ),
+
                       nn.Tanh()
                   )
 
+
               def forward(self, x):
+
                   features = self.encoder(x)
 
-                  geometry = self.geometry_head(features)
-                  color = self.color_head(features)
+                  geometry = self.geometry_head(
+                      features
+                  )
+
+                  color = self.color_head(
+                      features
+                  )
 
                   return geometry, color
 
 
           if __name__ == "__main__":
-              model = MobilePIFuStudent(width=32)
+
+              model = MobilePIFuStudent(
+                  width=32
+              )
 
               parameters = sum(
                   p.numel()
                   for p in model.parameters()
               )
 
-              print("Student parameters:", parameters)
+              print()
+              print("==========================================")
+              print("MOBILE STUDENT")
+              print("==========================================")
+
               print(
-                  "Student parameters (M):",
-                  round(parameters / 1_000_000, 3)
+                  "Parameters:",
+                  parameters
+              )
+
+              print(
+                  "Parameters (M):",
+                  round(
+                      parameters / 1_000_000,
+                      3
+                  )
               )
 
               x = torch.randn(
-                  1, 3, 256, 256
+                  1,
+                  3,
+                  256,
+                  256
               )
 
               with torch.no_grad():
+
                   geometry, color = model(x)
 
               print(
@@ -220,18 +331,26 @@ jobs:
               fp16_bytes = parameters * 2
 
               print(
-                  "Estimated FP32 weights MB:",
-                  round(fp32_bytes / 1024 / 1024, 2)
+                  "Estimated FP32 weights:",
+                  round(
+                      fp32_bytes / 1024 / 1024,
+                      2
+                  ),
+                  "MB"
               )
 
               print(
-                  "Estimated FP16 weights MB:",
-                  round(fp16_bytes / 1024 / 1024, 2)
+                  "Estimated FP16 weights:",
+                  round(
+                      fp16_bytes / 1024 / 1024,
+                      2
+                  ),
+                  "MB"
               )
           PY
 
       # ==========================================================
-      # TEST STUDENT
+      # TEST STUDENT ARCHITECTURE
       # ==========================================================
 
       - name: Test mobile student
@@ -239,10 +358,10 @@ jobs:
           python distillation/mobile_student.py
 
       # ==========================================================
-      # CREATE SYNTHETIC DISTILLATION TEST
+      # SYNTHETIC DISTILLATION PROTOTYPE
       # ==========================================================
 
-      - name: Run synthetic teacher-student experiment
+      - name: Run synthetic distillation experiment
         run: |
           cat > distillation/distill_prototype.py <<'PY'
           import torch
@@ -269,31 +388,39 @@ jobs:
           print("SYNTHETIC DISTILLATION TEST")
           print("==========================================")
 
-          print("Important:")
+          print()
           print(
-              "This experiment does NOT produce a "
-              "production-quality PIFuHDC replacement."
+              "This is a technical prototype."
           )
 
           print(
-              "It only verifies that the compact "
-              "student can be trained and exported."
+              "It does NOT yet reproduce "
+              "PIFuHDC human reconstruction."
           )
+
+          print(
+              "It verifies that the compact "
+              "student can train successfully."
+          )
+
+          print()
 
           for step in range(20):
 
-              # Synthetic input.
               x = torch.randn(
-                  1, 3, 256, 256,
+                  1,
+                  3,
+                  256,
+                  256,
                   device=device
               )
 
-              # Synthetic teacher-like targets.
-              #
-              # These are deliberately generated without
-              # personal images. They only test the training
-              # mechanism.
+              # --------------------------------------------------
+              # Synthetic target
+              # --------------------------------------------------
+
               with torch.no_grad():
+
                   target_geometry = torch.sigmoid(
                       x.mean(
                           dim=1,
@@ -309,7 +436,15 @@ jobs:
                       stride=16
                   )
 
+              # --------------------------------------------------
+              # Student
+              # --------------------------------------------------
+
               geometry, color = student(x)
+
+              # --------------------------------------------------
+              # Resize targets
+              # --------------------------------------------------
 
               target_geometry = F.interpolate(
                   target_geometry,
@@ -324,6 +459,10 @@ jobs:
                   mode="bilinear",
                   align_corners=False
               )
+
+              # --------------------------------------------------
+              # Loss
+              # --------------------------------------------------
 
               loss_geometry = F.mse_loss(
                   geometry,
@@ -340,11 +479,22 @@ jobs:
                   loss_color
               )
 
+              # --------------------------------------------------
+              # Backpropagation
+              # --------------------------------------------------
+
               optimizer.zero_grad()
+
               loss.backward()
+
               optimizer.step()
 
-              if step == 0 or (step + 1) % 5 == 0:
+              if (
+                  step == 0
+                  or
+                  (step + 1) % 5 == 0
+              ):
+
                   print(
                       "step:",
                       step + 1,
@@ -353,27 +503,70 @@ jobs:
                   )
 
           print()
-          print("Synthetic distillation test completed.")
+          print(
+              "Synthetic distillation test completed."
+          )
+
+          # Because this script runs from the repository root,
+          # save directly into the distillation directory.
+
+          output = (
+              "distillation/"
+              "mobile_student_prototype.pt"
+          )
 
           torch.save(
               student.state_dict(),
-              "distillation/mobile_student_prototype.pt"
+              output
           )
 
           print(
               "Saved:",
-              "distillation/mobile_student_prototype.pt"
+              output
           )
           PY
 
-          cd distillation
-
-          python distill_prototype.py
-
-          cd ..
+          python distillation/distill_prototype.py
 
       # ==========================================================
-      # EXPORT FP16
+      # VERIFY STUDENT CHECKPOINT
+      # ==========================================================
+
+      - name: Verify student checkpoint
+        run: |
+          python - <<'PY'
+          import os
+
+          path = (
+              "distillation/"
+              "mobile_student_prototype.pt"
+          )
+
+          print()
+          print("==========================================")
+          print("STUDENT CHECKPOINT")
+          print("==========================================")
+
+          if not os.path.exists(path):
+              raise RuntimeError(
+                  "Student checkpoint was not created."
+              )
+
+          size = os.path.getsize(path)
+
+          print("File:", path)
+          print("Bytes:", size)
+          print(
+              "MB:",
+              round(size / 1024 / 1024, 2)
+          )
+
+          print()
+          print("Student checkpoint verified.")
+          PY
+
+      # ==========================================================
+      # EXPORT FP16 STUDENT
       # ==========================================================
 
       - name: Export FP16 student
@@ -386,13 +579,18 @@ jobs:
               MobilePIFuStudent
           )
 
-          model = MobilePIFuStudent(
-              width=32
-          )
-
           checkpoint = (
               "distillation/"
               "mobile_student_prototype.pt"
+          )
+
+          output = (
+              "distillation/"
+              "mobile_student_fp16.pt"
+          )
+
+          model = MobilePIFuStudent(
+              width=32
           )
 
           state = torch.load(
@@ -401,37 +599,118 @@ jobs:
           )
 
           model.load_state_dict(state)
+
           model.eval()
 
           model.half()
-
-          output = (
-              "distillation/"
-              "mobile_student_fp16.pt"
-          )
 
           torch.save(
               model.state_dict(),
               output
           )
 
-          print("Saved:", output)
+          print()
+          print("==========================================")
+          print("FP16 EXPORT")
+          print("==========================================")
 
           for path in [
               checkpoint,
               output
           ]:
+
               size = os.path.getsize(path)
 
+              print()
+              print("File:", path)
+
               print(
-                  path,
-                  round(size / 1024 / 1024, 2),
-                  "MB"
+                  "Bytes:",
+                  size
               )
+
+              print(
+                  "MB:",
+                  round(
+                      size / 1024 / 1024,
+                      2
+                  )
+              )
+
+          print()
+          print("FP16 export completed.")
           PY
 
       # ==========================================================
-      # REPORT
+      # TEST FP16 STUDENT
+      # ==========================================================
+
+      - name: Test FP16 student
+        run: |
+          python - <<'PY'
+          import torch
+
+          from distillation.mobile_student import (
+              MobilePIFuStudent
+          )
+
+          checkpoint = (
+              "distillation/"
+              "mobile_student_fp16.pt"
+          )
+
+          model = MobilePIFuStudent(
+              width=32
+          )
+
+          state = torch.load(
+              checkpoint,
+              map_location="cpu"
+          )
+
+          model.load_state_dict(state)
+
+          model.eval()
+
+          model.half()
+
+          x = torch.randn(
+              1,
+              3,
+              256,
+              256
+          ).half()
+
+          with torch.no_grad():
+
+              geometry, color = model(x)
+
+          print()
+          print("==========================================")
+          print("FP16 STUDENT TEST")
+          print("==========================================")
+
+          print(
+              "Input:",
+              tuple(x.shape)
+          )
+
+          print(
+              "Geometry:",
+              tuple(geometry.shape)
+          )
+
+          print(
+              "Color:",
+              tuple(color.shape)
+          )
+
+          print()
+          print("FP16 inference test passed.")
+          PY
+
+      # ==========================================================
+      # CREATE REPORT
       # ==========================================================
 
       - name: Create distillation report
@@ -443,20 +722,30 @@ jobs:
             echo "PIFuHDC MOBILE DISTILLATION PROTOTYPE"
             echo "======================================"
             echo
-            echo "Teacher:"
+            echo "TEACHER CHECKPOINTS"
+            echo "-------------------"
             ls -lh pifuhdc/checkpoints/
             echo
-            echo "Student:"
+            echo "STUDENT CHECKPOINTS"
+            echo "-------------------"
             ls -lh distillation/
             echo
-            echo "This is a synthetic technical prototype."
-            echo "It is NOT yet a production PIFuHDC replacement."
+            echo "STATUS"
+            echo "------"
+            echo "Student architecture test completed."
+            echo
+            echo "IMPORTANT"
+            echo "This is NOT yet a production PIFuHDC"
+            echo "replacement."
+            echo
+            echo "The next stage must use actual"
+            echo "PIFuHDC teacher outputs/data."
           } > reports/distillation_report.txt
 
           cat reports/distillation_report.txt
 
       # ==========================================================
-      # UPLOAD STUDENT ONLY
+      # UPLOAD STUDENT ARTIFACT
       # ==========================================================
 
       - name: Upload student prototype
