@@ -1,0 +1,86 @@
+name: Bootstrap PIFuHD-Mobile
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create complete project tree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p \
+            conversion \
+            benchmark \
+            scripts \
+            samples \
+            models \
+            tests \
+            external \
+            .github/workflows
+
+          cat > README.md <<'EOF'
+# PIFuHD-Mobile
+
+Mobile-oriented optimization pipeline for PIFuHD.
+
+## Goal
+
+Photo
+→ PIFuHD
+→ 3D human mesh
+→ texture projection
+→ GLB export
+
+The first milestone is making the PIFuHD inference pipeline suitable for Android ARM64 devices.
+
+## Optimization stages
+
+1. Original PIFuHD baseline
+2. ONNX export
+3. ONNX validation
+4. FP16 conversion
+5. INT8 experiments
+6. Runtime benchmarking
+7. Android ARM64 integration
+8. Texture projection
+9. GLB export
+
+## Important
+
+The original PIFuHD model was designed for much larger desktop/GPU environments.
+
+This repository therefore treats Android compatibility as an optimization and benchmarking problem rather than assuming the original model will run directly on a phone.
+
+## Target device
+
+ARM64 Android phone.
+
+Initial runtime target:
+
+- ONNX Runtime
+- CPU/XNNPACK
+- FP16 where practical
+- NNAPI experiments later
+
+## Repository structure
+
+```text
+conversion/
+benchmark/
+scripts/
+samples/
+models/
+tests/
+external/
+.github/workflows/
