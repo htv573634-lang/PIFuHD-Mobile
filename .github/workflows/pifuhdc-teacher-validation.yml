@@ -101,7 +101,7 @@ jobs:
           echo "=========================================="
 
           gdown \
-            --id 1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM \
+            1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM \
             -O checkpoints/net_C_HD.pt
 
           test -f checkpoints/net_C_HD.pt
@@ -117,7 +117,6 @@ jobs:
 
           cp checkpoints/net_C_HD.pt checkpoints/net_C_choice2.pt
 
-          echo
           echo "PIFuHDC color checkpoint downloaded successfully."
 
           ls -lh checkpoints/net_C_HD.pt
@@ -136,19 +135,15 @@ jobs:
           test -f checkpoints/net_C_HD.pt
           test -f checkpoints/net_C_choice2.pt
 
-          echo
           echo "PIFuHD:"
           ls -lh checkpoints/pifuhd.pt
 
-          echo
           echo "PIFuHDC Color:"
           ls -lh checkpoints/net_C_HD.pt
 
-          echo
           echo "Color compatibility copy:"
           ls -lh checkpoints/net_C_choice2.pt
 
-          echo
           echo "SHA256:"
           sha256sum \
             checkpoints/pifuhd.pt \
@@ -171,9 +166,8 @@ jobs:
         run: |
           set -e
 
-          python -c "from PIL import Image; im=Image.open('teacher_input/sample.jpg'); w,h=im.size; open('teacher_input/sample_rect.txt','w').write('0 0 %d %d\n' % (w,h)); print('Image size:',w,'x',h); print('Rectangle: 0 0',w,h)"
+          python -c "from PIL import Image; im=Image.open('teacher_input/sample.jpg'); w,h=im.size; open('teacher_input/sample_rect.txt','w').write('0 0 %d %d\n' % (w,h)); print('Image size:',w,'x',h); print('Rectangle:',0,0,w,h)"
 
-          echo
           echo "Rectangle metadata:"
           cat teacher_input/sample_rect.txt
 
@@ -228,11 +222,9 @@ jobs:
             exit 1
           fi
 
-          echo
           echo "Generated files:"
           find teacher_output -type f -print
 
-          echo
           echo "Output size:"
           du -sh teacher_output
 
@@ -249,19 +241,18 @@ jobs:
           echo "OBJ count: $OBJ_COUNT"
 
           if [ "$OBJ_COUNT" -eq 0 ]; then
-            echo
             echo "ERROR: No OBJ mesh generated."
-            echo
+
             echo "Searching entire workspace:"
             find . -type f \
               \( -iname "*.obj" -o -iname "*.ply" \) \
               -print
+
             exit 1
           fi
 
           for OBJ in $(find teacher_output -type f -iname "*.obj"); do
 
-            echo
             echo "------------------------------------------"
             echo "MESH: $OBJ"
             echo "------------------------------------------"
@@ -287,6 +278,7 @@ jobs:
             fi
 
             echo "OBJ VALIDATION PASSED"
+
           done
 
       - name: Validate mesh with trimesh
