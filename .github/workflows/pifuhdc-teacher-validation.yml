@@ -11,17 +11,31 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+
       - name: Checkout PIFuHD-Mobile
         uses: actions/checkout@v4
+
+      # ============================================================
+      # PYTHON
+      # ============================================================
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
+      # ============================================================
+      # SYSTEM DEPENDENCIES
+      # ============================================================
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
+
           sudo apt-get install -y \
             git \
             wget \
@@ -33,6 +47,10 @@ jobs:
             libxext6 \
             libxrender1 \
             freeglut3-dev
+
+      # ============================================================
+      # PYTHON DEPENDENCIES
+      # ============================================================
 
       - name: Install Python dependencies
         run: |
@@ -55,6 +73,10 @@ jobs:
 
           pip install gdown
 
+      # ============================================================
+      # CLONE OFFICIAL PIFuHDC
+      # ============================================================
+
       - name: Clone official PIFuHDC
         run: |
           rm -rf pifuhdc
@@ -68,7 +90,12 @@ jobs:
           echo "=========================================="
 
           cd pifuhdc
+
           git rev-parse HEAD
+
+      # ============================================================
+      # GEOMETRY CHECKPOINT
+      # ============================================================
 
       - name: Download PIFuHD geometry checkpoint
         working-directory: pifuhdc
@@ -83,7 +110,13 @@ jobs:
             "https://dl.fbaipublicfiles.com/pifuhd/checkpoints/pifuhd.pt" \
             -O checkpoints/pifuhd.pt
 
+          echo ""
+          echo "Geometry checkpoint:"
           ls -lh checkpoints/pifuhd.pt
+
+      # ============================================================
+      # COLOR CHECKPOINT
+      # ============================================================
 
       - name: Download PIFuHDC color checkpoint
         working-directory: pifuhdc
@@ -96,7 +129,13 @@ jobs:
             "1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM" \
             -O checkpoints/net_C_HD.pt
 
+          echo ""
+          echo "Color checkpoint:"
           ls -lh checkpoints/net_C_HD.pt
+
+      # ============================================================
+      # CHECKPOINT VALIDATION
+      # ============================================================
 
       - name: Verify checkpoints
         working-directory: pifuhdc
@@ -108,18 +147,35 @@ jobs:
           test -f checkpoints/pifuhd.pt
           test -f checkpoints/net_C_HD.pt
 
-          echo ""
-          echo "Geometry:"
-          ls -lh checkpoints/pifuhd.pt
+          GEOMETRY_SIZE=$(stat -c%s checkpoints/pifuhd.pt)
+          COLOR_SIZE=$(stat -c%s checkpoints/net_C_HD.pt)
 
           echo ""
-          echo "Color:"
+          echo "Geometry checkpoint:"
+          ls -lh checkpoints/pifuhd.pt
+          echo "Bytes: $GEOMETRY_SIZE"
+
+          echo ""
+          echo "Color checkpoint:"
           ls -lh checkpoints/net_C_HD.pt
+          echo "Bytes: $COLOR_SIZE"
+
+          if [ "$GEOMETRY_SIZE" -lt 1000000000 ]; then
+            echo "WARNING: Geometry checkpoint appears unusually small."
+          fi
+
+          if [ "$COLOR_SIZE" -lt 10000000 ]; then
+            echo "WARNING: Color checkpoint appears unusually small."
+          fi
 
           echo ""
           echo "SHA256:"
           sha256sum checkpoints/pifuhd.pt
           sha256sum checkpoints/net_C_HD.pt
+
+      # ============================================================
+      # OFFICIAL TEST IMAGE
+      # ============================================================
 
       - name: Prepare official test image
         run: |
@@ -143,22 +199,28 @@ jobs:
 
           file teacher_input/sample.jpg
 
+      # ============================================================
+      # IMAGE VALIDATION
+      # ============================================================
+
       - name: Validate input image
         run: |
           python - <<'PY'
-          from PIL import Image
           from pathlib import Path
+          from PIL import Image
 
-          p = Path("teacher_input/sample.jpg")
+          path = Path("teacher_input/sample.jpg")
 
           print("==========================================")
           print("INPUT IMAGE VALIDATION")
           print("==========================================")
 
-          if not p.exists():
+          if not path.exists():
               raise SystemExit("ERROR: sample.jpg does not exist")
 
-          img = Image.open(p)
+          print("File size:", path.stat().st_size, "bytes")
+
+          img = Image.open(path)
 
           print("Format:", img.format)
           print("Mode:", img.mode)
@@ -169,32 +231,45 @@ jobs:
 
           img.verify()
 
+          print("")
           print("Image validation: OK")
           PY
+
+      # ============================================================
+      # RECTANGLE METADATA
+      # ============================================================
 
       - name: Create rectangle metadata
         run: |
           python - <<'PY'
           from PIL import Image
 
-          img = Image.open("teacher_input/sample.jpg")
+          image_path = "teacher_input/sample.jpg"
+          rect_path = "teacher_input/sample_rect.txt"
 
-          w, h = img.size
+          img = Image.open(image_path)
 
-          with open("teacher_input/sample_rect.txt", "w") as f:
-              f.write(f"0 0 {w} {h}\n")
+          width, height = img.size
+
+          with open(rect_path, "w") as f:
+              f.write(f"0 0 {width} {height}\n")
 
           print("==========================================")
           print("RECTANGLE METADATA")
           print("==========================================")
-          print(f"Image width : {w}")
-          print(f"Image height: {h}")
-          print(f"Rectangle   : 0 0 {w} {h}")
+
+          print("Image width :", width)
+          print("Image height:", height)
+          print("Rectangle   :", f"0 0 {width} {height}")
 
           print("")
-          print("File:")
-          print(open("teacher_input/sample_rect.txt").read())
+          print("Contents:")
+          print(open(rect_path).read())
           PY
+
+      # ============================================================
+      # DATASET VALIDATION
+      # ============================================================
 
       - name: Validate PIFuHDC dataset
         working-directory: pifuhdc
@@ -239,6 +314,10 @@ jobs:
           print("Dataset validation: OK")
           PY
 
+      # ============================================================
+      # IMPORT VALIDATION
+      # ============================================================
+
       - name: Validate imports
         working-directory: pifuhdc
         run: |
@@ -269,12 +348,27 @@ jobs:
           from lib.model import HGPIFuNetwNML
           from lib.model import HGPIFuMRNet
           from lib.model import HGResBlkPIFuNet
+
           from lib.mesh_util import reconstruction
           from lib.mesh_util import save_obj_mesh_with_color
 
           print("")
           print("PIFuHDC imports: OK")
           PY
+
+      # ============================================================
+      # PATCH recon.py
+      #
+      # The official PIFuHDC code catches the reconstruction/color
+      # exception and only prints the error. That hides the traceback.
+      #
+      # This patch changes:
+      #
+      # except Exception as e:
+      #     print(e)
+      #
+      # into a full traceback + raise.
+      # ============================================================
 
       - name: Patch PIFuHDC for full traceback
         working-directory: pifuhdc
@@ -283,44 +377,65 @@ jobs:
           from pathlib import Path
 
           path = Path("apps/recon.py")
+
           text = path.read_text()
 
-          old = """    except Exception as e:
-        print(e)"""
+          marker = "except Exception as e:"
+          lines = text.splitlines()
 
-          new = """    except Exception as e:
-        print("")
-        print("==========================================")
-        print("PIFuHDC INTERNAL EXCEPTION")
-        print("==========================================")
-        import traceback
-        traceback.print_exc()
-        print("==========================================")
-        raise"""
+          patched = False
 
-          count = text.count(old)
+          for i, line in enumerate(lines):
 
-          print("Exception handlers found:", count)
+              if line.strip() != marker:
+                  continue
 
-          if count == 0:
+              if i + 1 >= len(lines):
+                  continue
+
+              next_line = lines[i + 1]
+
+              if "print(e)" not in next_line:
+                  continue
+
+              indent = line[:len(line) - len(line.lstrip())]
+
+              replacement = [
+                  indent + "except Exception as e:",
+                  indent + "    print('')",
+                  indent + "    print('==========================================')",
+                  indent + "    print('PIFuHDC INTERNAL EXCEPTION')",
+                  indent + "    print('==========================================')",
+                  indent + "    import traceback",
+                  indent + "    traceback.print_exc()",
+                  indent + "    print('==========================================')",
+                  indent + "    raise",
+              ]
+
+              lines[i:i + 2] = replacement
+
+              patched = True
+
+              break
+
+          if not patched:
               raise SystemExit(
-                  "ERROR: Could not find the expected exception handler"
+                  "ERROR: Could not find the expected PIFuHDC exception handler."
               )
 
-          text = text.replace(old, new)
+          path.write_text(
+              "\n".join(lines) + "\n"
+          )
 
-          path.write_text(text)
-
-          print("Full traceback patch applied.")
-
-          print("")
-          print("Traceback locations:")
-
-          for number, line in enumerate(text.splitlines(), 1):
-              if "traceback.print_exc()" in line:
-                  print("line", number)
-
+          print("==========================================")
+          print("PIFuHDC TRACEBACK PATCH")
+          print("==========================================")
+          print("Patch applied successfully.")
           PY
+
+      # ============================================================
+      # CONFIRM PATCH
+      # ============================================================
 
       - name: Confirm PIFuHDC patched source
         working-directory: pifuhdc
@@ -333,6 +448,10 @@ jobs:
             "traceback.print_exc" \
             apps/recon.py || true
 
+      # ============================================================
+      # RUN REAL PIFuHDC TEACHER
+      # ============================================================
+
       - name: Run real PIFuHDC teacher
         working-directory: pifuhdc
         run: |
@@ -343,15 +462,18 @@ jobs:
           echo "=========================================="
 
           echo ""
-          echo "Input:"
-          find ../teacher_input -type f -maxdepth 1 -print
+          echo "Input files:"
+          find ../teacher_input \
+            -maxdepth 1 \
+            -type f \
+            -print
 
           echo ""
           echo "Checkpoints:"
           ls -lh checkpoints/
 
           echo ""
-          echo "Starting inference..."
+          echo "Starting PIFuHDC inference..."
           echo ""
 
           python -m apps.test_colorHD \
@@ -371,6 +493,10 @@ jobs:
 
           exit 0
 
+      # ============================================================
+      # COMPLETE OUTPUT DIAGNOSTICS
+      # ============================================================
+
       - name: Inspect complete PIFuHDC output
         run: |
           set +e
@@ -382,32 +508,65 @@ jobs:
           echo ""
           echo "WORKSPACE OBJ FILES"
           echo "------------------------------------------"
-          find . -type f -iname "*.obj" -print
+
+          find . \
+            -type f \
+            -iname "*.obj" \
+            -print
 
           echo ""
           echo "WORKSPACE PLY FILES"
           echo "------------------------------------------"
-          find . -type f -iname "*.ply" -print
+
+          find . \
+            -type f \
+            -iname "*.ply" \
+            -print
 
           echo ""
           echo "WORKSPACE PNG FILES"
           echo "------------------------------------------"
-          find . -type f -iname "*.png" -print
+
+          find . \
+            -type f \
+            -iname "*.png" \
+            -print
+
+          echo ""
+          echo "WORKSPACE GLB FILES"
+          echo "------------------------------------------"
+
+          find . \
+            -type f \
+            -iname "*.glb" \
+            -print
 
           echo ""
           echo "teacher_output CONTENTS"
           echo "------------------------------------------"
-          find teacher_output -type f -printf "%p %s bytes\n" -print 2>/dev/null
+
+          find teacher_output \
+            -type f \
+            -printf "%p %s bytes\n" \
+            -print 2>/dev/null
 
           echo ""
           echo "PIFuHDC RESULTS CONTENTS"
           echo "------------------------------------------"
-          find pifuhdc/results -type f -printf "%p %s bytes\n" -print 2>/dev/null
+
+          find pifuhdc/results \
+            -type f \
+            -printf "%p %s bytes\n" \
+            -print 2>/dev/null
 
           echo ""
           echo "PIFuHDC DIRECTORY TREE"
           echo "------------------------------------------"
-          find pifuhdc -maxdepth 5 -type d | sort
+
+          find pifuhdc \
+            -maxdepth 5 \
+            -type d \
+            | sort
 
           echo ""
           echo "=========================================="
@@ -415,6 +574,10 @@ jobs:
           echo "=========================================="
 
           exit 0
+
+      # ============================================================
+      # COLLECT MESHES
+      # ============================================================
 
       - name: Collect generated meshes
         run: |
@@ -445,22 +608,29 @@ jobs:
             -type f \
             -iname "*.obj" \
             ! -path "./teacher_output/collected/*" \
-            -exec cp --parents {} teacher_output/collected/ \; 2>/dev/null
+            -exec cp --parents {} teacher_output/collected/ \; \
+            2>/dev/null
 
           find . \
             -type f \
             -iname "*.ply" \
             ! -path "./teacher_output/collected/*" \
-            -exec cp --parents {} teacher_output/collected/ \; 2>/dev/null
+            -exec cp --parents {} teacher_output/collected/ \; \
+            2>/dev/null
 
           echo ""
           echo "Collected files:"
+
           find teacher_output/collected \
             -type f \
             -printf "%p %s bytes\n" \
             2>/dev/null
 
           exit 0
+
+      # ============================================================
+      # MESH VALIDATION
+      # ============================================================
 
       - name: Validate generated mesh
         run: |
@@ -484,14 +654,15 @@ jobs:
           echo "PLY count: $PLY_COUNT"
 
           if [ "$OBJ_COUNT" -eq 0 ] && [ "$PLY_COUNT" -eq 0 ]; then
+
             echo ""
             echo "ERROR: No 3D mesh generated."
             echo ""
-            echo "The important information is above in:"
-            echo "RUNNING REAL PIFuHDC TEACHER"
+            echo "The important diagnostic information is"
+            echo "the PIFuHDC INTERNAL EXCEPTION traceback"
+            echo "printed during the inference step."
             echo ""
-            echo "The patched PIFuHDC should now print"
-            echo "the complete internal Python traceback."
+
             exit 1
           fi
 
@@ -500,6 +671,7 @@ jobs:
 
           echo ""
           echo "Mesh files:"
+
           find teacher_output \
             \( -iname "*.obj" -o -iname "*.ply" \) \
             -type f \
@@ -507,13 +679,19 @@ jobs:
 
           exit 0
 
+      # ============================================================
+      # OBJ GEOMETRY VALIDATION
+      # ============================================================
+
       - name: Validate OBJ geometry
         if: always()
         run: |
           python - <<'PY'
           from pathlib import Path
 
-          objs = list(Path("teacher_output").rglob("*.obj"))
+          objs = list(
+              Path("teacher_output").rglob("*.obj")
+          )
 
           print("==========================================")
           print("OBJ GEOMETRY CHECK")
@@ -524,13 +702,20 @@ jobs:
               raise SystemExit(0)
 
           for obj in objs:
+
               vertices = 0
               faces = 0
               colors = 0
 
-              with obj.open("r", errors="ignore") as f:
+              with obj.open(
+                  "r",
+                  errors="ignore"
+              ) as f:
+
                   for line in f:
+
                       if line.startswith("v "):
+
                           vertices += 1
 
                           parts = line.strip().split()
@@ -539,6 +724,7 @@ jobs:
                               colors += 1
 
                       elif line.startswith("f "):
+
                           faces += 1
 
               print("")
@@ -549,10 +735,18 @@ jobs:
               print("Colored vertices:", colors)
 
               if vertices == 0:
-                  print("WARNING: OBJ contains no vertices.")
+                  print(
+                      "WARNING: OBJ contains no vertices."
+                  )
 
               if faces == 0:
-                  print("WARNING: OBJ contains no faces.")
+                  print(
+                      "WARNING: OBJ contains no faces."
+                  )
+
+      # ============================================================
+      # TRIMESH VALIDATION
+      # ============================================================
 
       - name: Validate mesh with trimesh
         if: always()
@@ -562,39 +756,71 @@ jobs:
 
           try:
               import trimesh
+
           except Exception as e:
-              print("Could not import trimesh:", e)
+              print(
+                  "Could not import trimesh:",
+                  e
+              )
+
               raise SystemExit(0)
 
           print("==========================================")
           print("TRIMESH VALIDATION")
           print("==========================================")
 
-          objs = list(Path("teacher_output").rglob("*.obj"))
+          objs = list(
+              Path("teacher_output").rglob("*.obj")
+          )
 
           if not objs:
               print("No OBJ available.")
               raise SystemExit(0)
 
           for path in objs:
+
               print("")
               print("Loading:", path)
 
               try:
+
                   mesh = trimesh.load(
                       path,
                       process=False,
                       force="mesh"
                   )
 
-                  print("Vertices:", len(mesh.vertices))
-                  print("Faces:", len(mesh.faces))
-                  print("Watertight:", mesh.is_watertight)
-                  print("Bounds:", mesh.bounds)
+                  print(
+                      "Vertices:",
+                      len(mesh.vertices)
+                  )
+
+                  print(
+                      "Faces:",
+                      len(mesh.faces)
+                  )
+
+                  print(
+                      "Watertight:",
+                      mesh.is_watertight
+                  )
+
+                  print(
+                      "Bounds:",
+                      mesh.bounds
+                  )
 
               except Exception as e:
+
                   print("TRIMESH ERROR:")
-                  print(type(e).__name__, str(e))
+                  print(
+                      type(e).__name__,
+                      str(e)
+                  )
+
+      # ============================================================
+      # UPLOAD ARTIFACTS
+      # ============================================================
 
       - name: Upload PIFuHDC teacher artifacts
         if: always()
