@@ -1,4 +1,4 @@
-name: Bootstrap PIFuHD-Mobile
+name: Bootstrap PIFuHD Mobile
 
 on:
   workflow_dispatch:
@@ -8,79 +8,52 @@ permissions:
 
 jobs:
   bootstrap:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Create complete project tree
-        shell: bash
+      - name: Create folders
         run: |
-          set -euo pipefail
+          mkdir -p conversion benchmark scripts samples models tests
 
-          mkdir -p \
-            conversion \
-            benchmark \
-            scripts \
-            samples \
-            models \
-            tests \
-            external \
-            .github/workflows
-
+      - name: Create README
+        run: |
           cat > README.md <<'EOF'
-# PIFuHD-Mobile
+          # PIFuHD-Mobile
 
-Mobile-oriented optimization pipeline for PIFuHD.
+          PIFuHD mobile optimization project.
 
-## Goal
+          Goal:
+          Photo -> PIFuHD -> 3D human mesh -> texture -> GLB
+          EOF
 
-Photo
-→ PIFuHD
-→ 3D human mesh
-→ texture projection
-→ GLB export
+      - name: Create project files
+        run: |
+          touch conversion/export_onnx.py
+          touch conversion/validate_onnx.py
+          touch conversion/convert_fp16.py
+          touch conversion/quantize_int8.py
 
-The first milestone is making the PIFuHD inference pipeline suitable for Android ARM64 devices.
+          touch benchmark/benchmark_pytorch.py
+          touch benchmark/benchmark_onnx.py
 
-## Optimization stages
+          touch scripts/download_pifuhd.py
+          touch scripts/verify_checkpoint.py
+          touch scripts/report_model.py
 
-1. Original PIFuHD baseline
-2. ONNX export
-3. ONNX validation
-4. FP16 conversion
-5. INT8 experiments
-6. Runtime benchmarking
-7. Android ARM64 integration
-8. Texture projection
-9. GLB export
+          touch samples/.gitkeep
+          touch models/.gitkeep
+          touch tests/.gitkeep
 
-## Important
+      - name: Save changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-The original PIFuHD model was designed for much larger desktop/GPU environments.
+          git add .
 
-This repository therefore treats Android compatibility as an optimization and benchmarking problem rather than assuming the original model will run directly on a phone.
+          git commit -m "Create PIFuHD Mobile project structure" || echo "Nothing to commit"
 
-## Target device
-
-ARM64 Android phone.
-
-Initial runtime target:
-
-- ONNX Runtime
-- CPU/XNNPACK
-- FP16 where practical
-- NNAPI experiments later
-
-## Repository structure
-
-```text
-conversion/
-benchmark/
-scripts/
-samples/
-models/
-tests/
-external/
-.github/workflows/
+          git push
