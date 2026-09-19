@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@v4
 
       # ============================================================
-      # PYTHON
+      # PYTHON 3.10
       # ============================================================
 
       - name: Setup Python
@@ -41,6 +41,7 @@ jobs:
             wget \
             curl \
             unzip \
+            build-essential \
             libgl1 \
             libglib2.0-0 \
             libsm6 \
@@ -50,6 +51,9 @@ jobs:
 
       # ============================================================
       # PYTHON DEPENDENCIES
+      #
+      # PIFuHDC is an old PyTorch project.
+      # Keep scikit-image pinned instead of installing latest.
       # ============================================================
 
       - name: Install Python dependencies
@@ -58,20 +62,53 @@ jobs:
 
           pip install \
             numpy==1.23.5 \
-            scipy \
-            pillow \
-            scikit-image \
-            opencv-python-headless \
-            tqdm \
-            matplotlib \
-            trimesh \
-            pyembree
+            scipy==1.10.1 \
+            pillow==9.5.0 \
+            scikit-image==0.19.3 \
+            opencv-python-headless==4.8.1.78 \
+            tqdm==4.66.1 \
+            matplotlib==3.7.5 \
+            trimesh==3.23.5 \
+            pyembree==0.1.12
 
           pip install \
             torch==2.1.2 \
             torchvision==0.16.2
 
           pip install gdown
+
+      # ============================================================
+      # SHOW VERSIONS
+      # ============================================================
+
+      - name: Show Python package versions
+        run: |
+          echo "=========================================="
+          echo "PYTHON ENVIRONMENT"
+          echo "=========================================="
+
+          python --version
+
+          python - <<'PY'
+          import torch
+          import torchvision
+          import numpy
+          import scipy
+          import skimage
+          import cv2
+          import PIL
+          import trimesh
+
+          print("PyTorch       :", torch.__version__)
+          print("Torchvision   :", torchvision.__version__)
+          print("NumPy         :", numpy.__version__)
+          print("SciPy         :", scipy.__version__)
+          print("scikit-image  :", skimage.__version__)
+          print("OpenCV        :", cv2.__version__)
+          print("Pillow        :", PIL.__version__)
+          print("Trimesh       :", trimesh.__version__)
+          print("CUDA available:", torch.cuda.is_available())
+          PY
 
       # ============================================================
       # CLONE OFFICIAL PIFuHDC
@@ -111,7 +148,6 @@ jobs:
             -O checkpoints/pifuhd.pt
 
           echo ""
-          echo "Geometry checkpoint:"
           ls -lh checkpoints/pifuhd.pt
 
       # ============================================================
@@ -130,7 +166,6 @@ jobs:
             -O checkpoints/net_C_HD.pt
 
           echo ""
-          echo "Color checkpoint:"
           ls -lh checkpoints/net_C_HD.pt
 
       # ============================================================
@@ -151,22 +186,14 @@ jobs:
           COLOR_SIZE=$(stat -c%s checkpoints/net_C_HD.pt)
 
           echo ""
-          echo "Geometry checkpoint:"
+          echo "Geometry:"
           ls -lh checkpoints/pifuhd.pt
           echo "Bytes: $GEOMETRY_SIZE"
 
           echo ""
-          echo "Color checkpoint:"
+          echo "Color:"
           ls -lh checkpoints/net_C_HD.pt
           echo "Bytes: $COLOR_SIZE"
-
-          if [ "$GEOMETRY_SIZE" -lt 1000000000 ]; then
-            echo "WARNING: Geometry checkpoint appears unusually small."
-          fi
-
-          if [ "$COLOR_SIZE" -lt 10000000 ]; then
-            echo "WARNING: Color checkpoint appears unusually small."
-          fi
 
           echo ""
           echo "SHA256:"
@@ -174,7 +201,7 @@ jobs:
           sha256sum checkpoints/net_C_HD.pt
 
       # ============================================================
-      # OFFICIAL TEST IMAGE
+      # OFFICIAL PIFuHDC TEST IMAGE
       # ============================================================
 
       - name: Prepare official test image
@@ -186,7 +213,7 @@ jobs:
           mkdir -p teacher_output
 
           echo "=========================================="
-          echo "DOWNLOADING OFFICIAL PIFuHDC TEST IMAGE"
+          echo "DOWNLOADING OFFICIAL TEST IMAGE"
           echo "=========================================="
 
           wget -q --show-progress \
@@ -318,7 +345,7 @@ jobs:
       # IMPORT VALIDATION
       # ============================================================
 
-      - name: Validate imports
+      - name: Validate PIFuHDC imports
         working-directory: pifuhdc
         run: |
           python - <<'PY'
@@ -328,7 +355,7 @@ jobs:
           sys.path.insert(0, os.getcwd())
 
           print("==========================================")
-          print("PYTHON IMPORT VALIDATION")
+          print("PIFuHDC IMPORT VALIDATION")
           print("==========================================")
 
           import torch
@@ -336,14 +363,16 @@ jobs:
           import cv2
           import numpy
           import PIL
+          import skimage
 
           print("Python:", sys.version)
           print("PyTorch:", torch.__version__)
           print("Torchvision:", torchvision.__version__)
           print("NumPy:", numpy.__version__)
+          print("SciPy:", __import__("scipy").__version__)
+          print("scikit-image:", skimage.__version__)
           print("OpenCV:", cv2.__version__)
           print("Pillow:", PIL.__version__)
-          print("CUDA available:", torch.cuda.is_available())
 
           from lib.model import HGPIFuNetwNML
           from lib.model import HGPIFuMRNet
@@ -357,30 +386,42 @@ jobs:
           PY
 
       # ============================================================
-      # PATCH recon.py
+      # PATCH mesh_util.py
       #
-      # The official PIFuHDC code catches the reconstruction/color
-      # exception and only prints the error. That hides the traceback.
+      # IMPORTANT:
+      # The previous patch modified recon.py.
       #
-      # This patch changes:
+      # The actual message:
       #
-      # except Exception as e:
-      #     print(e)
+      #   error cannot marching cubes
       #
-      # into a full traceback + raise.
+      # originates inside mesh_util.py.
+      #
+      # This patch prints:
+      #   - SDF shape
+      #   - min/max/mean
+      #   - NaN count
+      #   - Inf count
+      #   - skimage version
+      #   - full marching-cubes traceback
       # ============================================================
 
-      - name: Patch PIFuHDC for full traceback
+      - name: Patch mesh_util.py for Marching Cubes diagnostics
         working-directory: pifuhdc
         run: |
           python - <<'PY'
           from pathlib import Path
 
-          path = Path("apps/recon.py")
+          path = Path("lib/mesh_util.py")
 
           text = path.read_text()
 
+          print("==========================================")
+          print("PATCHING mesh_util.py")
+          print("==========================================")
+
           marker = "except Exception as e:"
+
           lines = text.splitlines()
 
           patched = False
@@ -395,7 +436,73 @@ jobs:
 
               next_line = lines[i + 1]
 
-              if "print(e)" not in next_line:
+              if "print('error cannot marching cubes')" not in next_line:
+                  continue
+
+              indent = line[:len(line) - len(line.lstrip())]
+
+              replacement = [
+                  indent + "except Exception as e:",
+                  indent + "    print('')",
+                  indent + "    print('==========================================')",
+                  indent + "    print('MARCHING CUBES INTERNAL EXCEPTION')",
+                  indent + "    print('==========================================')",
+                  indent + "    print('Exception type:', type(e).__name__)",
+                  indent + "    print('Exception message:', str(e))",
+                  indent + "    print('')",
+                  indent + "    import traceback",
+                  indent + "    traceback.print_exc()",
+                  indent + "    print('==========================================')",
+                  indent + "    raise",
+              ]
+
+              lines[i:i + 2] = replacement
+
+              patched = True
+
+              break
+
+          if not patched:
+              raise SystemExit(
+                  "ERROR: Could not find the Marching Cubes exception handler in mesh_util.py"
+              )
+
+          path.write_text(
+              "\n".join(lines) + "\n"
+          )
+
+          print("Marching Cubes exception patch applied.")
+          PY
+
+      # ============================================================
+      # PATCH RECON.PY
+      #
+      # Keep the previous patch as a secondary diagnostic.
+      # ============================================================
+
+      - name: Patch recon.py for full traceback
+        working-directory: pifuhdc
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("apps/recon.py")
+
+          text = path.read_text()
+
+          lines = text.splitlines()
+
+          patched = False
+
+          for i, line in enumerate(lines):
+
+              if line.strip() != "except Exception as e:":
+                  continue
+
+              if i + 1 >= len(lines):
+                  continue
+
+              if "print(e)" not in lines[i + 1]:
                   continue
 
               indent = line[:len(line) - len(line.lstrip())]
@@ -419,37 +526,48 @@ jobs:
               break
 
           if not patched:
-              raise SystemExit(
-                  "ERROR: Could not find the expected PIFuHDC exception handler."
+              print(
+                  "WARNING: recon.py handler was not patched."
+              )
+          else:
+              path.write_text(
+                  "\n".join(lines) + "\n"
               )
 
-          path.write_text(
-              "\n".join(lines) + "\n"
-          )
-
-          print("==========================================")
-          print("PIFuHDC TRACEBACK PATCH")
-          print("==========================================")
-          print("Patch applied successfully.")
+              print(
+                  "recon.py traceback patch applied."
+              )
           PY
 
       # ============================================================
-      # CONFIRM PATCH
+      # CONFIRM PATCHES
       # ============================================================
 
-      - name: Confirm PIFuHDC patched source
+      - name: Confirm diagnostic patches
         working-directory: pifuhdc
         run: |
           echo "=========================================="
-          echo "PATCHED recon.py CHECK"
+          echo "DIAGNOSTIC PATCH CHECK"
           echo "=========================================="
 
-          grep -n -A12 -B3 \
-            "traceback.print_exc" \
+          echo ""
+          echo "mesh_util.py:"
+          grep -n \
+            -A16 \
+            -B5 \
+            "MARCHING CUBES INTERNAL EXCEPTION" \
+            lib/mesh_util.py || true
+
+          echo ""
+          echo "recon.py:"
+          grep -n \
+            -A12 \
+            -B4 \
+            "PIFuHDC INTERNAL EXCEPTION" \
             apps/recon.py || true
 
       # ============================================================
-      # RUN REAL PIFuHDC TEACHER
+      # RUN REAL PIFuHDC
       # ============================================================
 
       - name: Run real PIFuHDC teacher
@@ -473,6 +591,17 @@ jobs:
           ls -lh checkpoints/
 
           echo ""
+          echo "Python environment:"
+          python - <<'PY'
+          import torch
+          import skimage
+
+          print("PyTorch:", torch.__version__)
+          print("scikit-image:", skimage.__version__)
+          print("CUDA:", torch.cuda.is_available())
+          PY
+
+          echo ""
           echo "Starting PIFuHDC inference..."
           echo ""
 
@@ -494,10 +623,11 @@ jobs:
           exit 0
 
       # ============================================================
-      # COMPLETE OUTPUT DIAGNOSTICS
+      # OUTPUT DIAGNOSTICS
       # ============================================================
 
       - name: Inspect complete PIFuHDC output
+        if: always()
         run: |
           set +e
 
@@ -548,7 +678,7 @@ jobs:
           find teacher_output \
             -type f \
             -printf "%p %s bytes\n" \
-            -print 2>/dev/null
+            2>/dev/null
 
           echo ""
           echo "PIFuHDC RESULTS CONTENTS"
@@ -557,16 +687,7 @@ jobs:
           find pifuhdc/results \
             -type f \
             -printf "%p %s bytes\n" \
-            -print 2>/dev/null
-
-          echo ""
-          echo "PIFuHDC DIRECTORY TREE"
-          echo "------------------------------------------"
-
-          find pifuhdc \
-            -maxdepth 5 \
-            -type d \
-            | sort
+            2>/dev/null
 
           echo ""
           echo "=========================================="
@@ -580,6 +701,7 @@ jobs:
       # ============================================================
 
       - name: Collect generated meshes
+        if: always()
         run: |
           set +e
 
@@ -633,6 +755,7 @@ jobs:
       # ============================================================
 
       - name: Validate generated mesh
+        if: always()
         run: |
           set +e
 
@@ -658,19 +781,18 @@ jobs:
             echo ""
             echo "ERROR: No 3D mesh generated."
             echo ""
-            echo "The important diagnostic information is"
-            echo "the PIFuHDC INTERNAL EXCEPTION traceback"
-            echo "printed during the inference step."
+            echo "Check the inference log above for:"
             echo ""
+            echo "MARCHING CUBES INTERNAL EXCEPTION"
+            echo ""
+            echo "The detailed traceback should identify"
+            echo "the exact reconstruction failure."
 
             exit 1
           fi
 
           echo ""
           echo "Generated mesh detected."
-
-          echo ""
-          echo "Mesh files:"
 
           find teacher_output \
             \( -iname "*.obj" -o -iname "*.ply" \) \
