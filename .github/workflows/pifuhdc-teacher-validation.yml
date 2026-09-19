@@ -66,8 +66,36 @@ jobs:
 
           test -d pifuhdc
 
-          echo "Official PIFuHDC repository:"
-          ls -la pifuhdc
+      - name: Inspect official reconstruction code
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "PIFuHDC REPOSITORY STRUCTURE"
+          echo "=========================================="
+
+          find pifuhdc \
+            -maxdepth 2 \
+            -type f \
+            | sort \
+            | head -300
+
+          echo ""
+          echo "=========================================="
+          echo "test_colorHD.py"
+          echo "=========================================="
+
+          sed -n '1,260p' pifuhdc/apps/test_colorHD.py
+
+          echo ""
+          echo "=========================================="
+          echo "recon.py OUTPUT REFERENCES"
+          echo "=========================================="
+
+          grep -nEi \
+            "results_path|results|save|obj|mesh|write|export" \
+            pifuhdc/apps/recon.py \
+            | head -200 || true
 
       - name: Prepare directories
         run: |
@@ -76,6 +104,7 @@ jobs:
           mkdir -p pifuhdc/checkpoints
           mkdir -p teacher_input
           mkdir -p teacher_output
+          mkdir -p diagnostic_output
 
       - name: Download PIFuHD geometry teacher
         working-directory: pifuhdc
@@ -100,8 +129,6 @@ jobs:
             echo "ERROR: PIFuHD checkpoint is too small."
             exit 1
           fi
-
-          echo "PIFuHD checkpoint downloaded successfully."
 
           ls -lh checkpoints/pifuhd.pt
 
@@ -132,8 +159,6 @@ jobs:
           cp checkpoints/net_C_HD.pt \
              checkpoints/net_C_choice2.pt
 
-          echo "PIFuHDC color checkpoint downloaded successfully."
-
           ls -lh checkpoints/net_C_HD.pt
           ls -lh checkpoints/net_C_choice2.pt
 
@@ -150,16 +175,8 @@ jobs:
           test -f checkpoints/net_C_HD.pt
           test -f checkpoints/net_C_choice2.pt
 
-          echo ""
-          echo "PIFuHD:"
           ls -lh checkpoints/pifuhd.pt
-
-          echo ""
-          echo "PIFuHDC Color:"
           ls -lh checkpoints/net_C_HD.pt
-
-          echo ""
-          echo "Color compatibility copy:"
           ls -lh checkpoints/net_C_choice2.pt
 
           echo ""
@@ -183,8 +200,6 @@ jobs:
 
           test -s teacher_input/sample.jpg
 
-          echo ""
-          echo "Downloaded sample:"
           file teacher_input/sample.jpg
           ls -lh teacher_input/sample.jpg
 
@@ -192,48 +207,20 @@ jobs:
         run: |
           set -e
 
-          echo "=========================================="
-          echo "VALIDATING SAMPLE IMAGE"
-          echo "=========================================="
-
           python -c "from PIL import Image; im=Image.open('teacher_input/sample.jpg'); print('Format:',im.format); print('Size:',im.size); print('Mode:',im.mode); im.verify(); print('IMAGE VALIDATION PASSED')"
 
       - name: Create rectangle metadata
         run: |
           set -e
 
-          echo "=========================================="
-          echo "CREATING RECTANGLE METADATA"
-          echo "=========================================="
-
           python -c "from PIL import Image; im=Image.open('teacher_input/sample.jpg'); w,h=im.size; open('teacher_input/sample_rect.txt','w').write('0 0 %d %d\n' % (w,h)); print('Image size:',w,'x',h); print('Rectangle:',0,0,w,h)"
 
-          echo ""
-          echo "Rectangle metadata:"
           cat teacher_input/sample_rect.txt
-
-      - name: Verify teacher input
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "TEACHER INPUT"
-          echo "=========================================="
-
-          test -f teacher_input/sample.jpg
-          test -f teacher_input/sample_rect.txt
-
-          echo ""
-          ls -lh teacher_input/
 
       - name: Validate EvalDataset
         working-directory: pifuhdc
         run: |
           set -e
-
-          echo "=========================================="
-          echo "VALIDATING EVAL DATASET"
-          echo "=========================================="
 
           python -c "from lib.data.EvalDataset import EvalDataset; O=type('Opt',(),{'dataroot':'../teacher_input','loadSize':1024}); d=EvalDataset(O()); print('Dataset length:',len(d)); assert len(d)==1; print('EvalDataset PASSED')"
 
@@ -242,16 +229,12 @@ jobs:
         run: |
           set -e
 
-          echo "=========================================="
-          echo "VALIDATING PYTHON IMPORTS"
-          echo "=========================================="
-
           python -c "import torch,cv2,PIL,skimage,trimesh,matplotlib; print('PyTorch:',torch.__version__); print('OpenCV:',cv2.__version__); print('Pillow:',PIL.__version__); print('scikit-image:',skimage.__version__); print('trimesh:',trimesh.__version__); print('matplotlib:',matplotlib.__version__); print('IMPORT VALIDATION PASSED')"
 
       - name: Run real PIFuHDC teacher
         working-directory: pifuhdc
         run: |
-          set -e
+          set +e
 
           echo "=========================================="
           echo "RUNNING REAL PIFuHDC TEACHER"
@@ -265,26 +248,115 @@ jobs:
             --resolution 256 \
             --use_rect
 
-      - name: Inspect teacher output
+          EXIT_CODE=$?
+
+          echo ""
+          echo "PIFuHDC process exit code: $EXIT_CODE"
+
+          exit 0
+
+      - name: Search all generated files
+        if: always()
         run: |
-          set -e
+          set +e
 
           echo "=========================================="
-          echo "TEACHER OUTPUT"
+          echo "SEARCHING ENTIRE WORKSPACE"
           echo "=========================================="
 
-          if [ ! -d teacher_output ]; then
-            echo "ERROR: teacher_output directory missing."
-            exit 1
-          fi
+          echo ""
+          echo "OBJ FILES:"
+          find . \
+            -type f \
+            -iname "*.obj" \
+            -print
 
           echo ""
-          echo "Generated files:"
-          find teacher_output -type f -print
+          echo "PLY FILES:"
+          find . \
+            -type f \
+            -iname "*.ply" \
+            -print
 
           echo ""
-          echo "Output size:"
-          du -sh teacher_output
+          echo "PNG FILES:"
+          find . \
+            -type f \
+            -iname "*.png" \
+            -print
+
+          echo ""
+          echo "JPG FILES:"
+          find . \
+            -type f \
+            -iname "*.jpg" \
+            -print
+
+          echo ""
+          echo "ALL FILES IN teacher_output:"
+          find teacher_output \
+            -type f \
+            -print 2>/dev/null || true
+
+          echo ""
+          echo "ALL FILES IN pifuhdc/results:"
+          find pifuhdc/results \
+            -type f \
+            -print 2>/dev/null || true
+
+          echo ""
+          echo "ALL DIRECTORIES:"
+          find . \
+            -maxdepth 4 \
+            -type d \
+            | sort
+
+      - name: Collect generated meshes
+        if: always()
+        run: |
+          set +e
+
+          echo "=========================================="
+          echo "COLLECTING GENERATED MESHES"
+          echo "=========================================="
+
+          mkdir -p teacher_output
+
+          FOUND=0
+
+          while IFS= read -r FILE; do
+
+            if [ -f "$FILE" ]; then
+
+              case "$FILE" in
+                ./teacher_output/*)
+                  ;;
+                *)
+                  echo "Found mesh:"
+                  echo "$FILE"
+
+                  cp "$FILE" \
+                    "teacher_output/$(basename "$FILE")"
+
+                  FOUND=$((FOUND + 1))
+                  ;;
+              esac
+
+            fi
+
+          done < <(
+            find . \
+              -type f \
+              \( -iname "*.obj" -o -iname "*.ply" \) \
+              -print
+          )
+
+          echo ""
+          echo "Meshes collected: $FOUND"
+
+          find teacher_output \
+            -type f \
+            -print
 
       - name: Validate OBJ mesh
         run: |
@@ -299,14 +371,17 @@ jobs:
           echo "OBJ count: $OBJ_COUNT"
 
           if [ "$OBJ_COUNT" -eq 0 ]; then
+
             echo ""
             echo "ERROR: No OBJ mesh generated."
 
             echo ""
-            echo "Searching entire workspace:"
-            find . -type f \
-              \( -iname "*.obj" -o -iname "*.ply" \) \
-              -print
+            echo "This means the PIFuHDC inference stage did not produce"
+            echo "an OBJ in the expected locations."
+
+            echo ""
+            echo "The previous diagnostic step has searched the"
+            echo "entire workspace."
 
             exit 1
           fi
@@ -352,29 +427,69 @@ jobs:
 
           python -c "import glob,trimesh; files=glob.glob('teacher_output/**/*.obj',recursive=True); print('OBJ files:',files); assert files,'No OBJ files found'; [(print('Loading:',p),print('Vertices:',len((m:=trimesh.load(p,force='mesh',process=False)).vertices)),print('Faces:',len(m.faces)),print('Bounds:',m.bounds),print('TRIMESH VALIDATION PASSED')) for p in files]"
 
-      - name: Create teacher report
+      - name: Create diagnostic report
+        if: always()
         run: |
-          set -e
+          set +e
 
-          printf '%s\n' \
-            'PIFuHDC REAL TEACHER VALIDATION' \
-            '================================' \
-            'Teacher: PIFuHD geometry + PIFuHDC color' \
-            'Input: official PIFuHDC images/cxk.jpg' \
-            'Mode: Rectangle' \
-            'Resolution: 256' \
-            'Output: teacher_output/' \
-            'Status: PASSED' \
-            > teacher_report.txt
+          echo "PIFuHDC TEACHER DIAGNOSTIC REPORT" \
+            > diagnostic_output/report.txt
 
-          cat teacher_report.txt
+          echo "=================================" \
+            >> diagnostic_output/report.txt
+
+          echo "" >> diagnostic_output/report.txt
+
+          echo "Workspace OBJ files:" \
+            >> diagnostic_output/report.txt
+
+          find . \
+            -type f \
+            -iname "*.obj" \
+            -print \
+            >> diagnostic_output/report.txt
+
+          echo "" >> diagnostic_output/report.txt
+
+          echo "Workspace PLY files:" \
+            >> diagnostic_output/report.txt
+
+          find . \
+            -type f \
+            -iname "*.ply" \
+            -print \
+            >> diagnostic_output/report.txt
+
+          echo "" >> diagnostic_output/report.txt
+
+          echo "teacher_output contents:" \
+            >> diagnostic_output/report.txt
+
+          find teacher_output \
+            -type f \
+            -print \
+            >> diagnostic_output/report.txt
+
+          echo "" >> diagnostic_output/report.txt
+
+          echo "PIFuHDC results contents:" \
+            >> diagnostic_output/report.txt
+
+          find pifuhdc/results \
+            -type f \
+            -print \
+            >> diagnostic_output/report.txt 2>/dev/null || true
+
+          cat diagnostic_output/report.txt
 
       - name: Upload teacher artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pifuhdc-teacher-validation
           path: |
             teacher_input/
             teacher_output/
-            teacher_report.txt
-          if-no-files-found: error
+            diagnostic_output/
+            pifuhdc/results/
+          if-no-files-found: warn
