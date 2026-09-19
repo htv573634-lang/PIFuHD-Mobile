@@ -1,4 +1,4 @@
-name: Step 2 - PIFuHDC Baseline
+name: Step 2 - PIFuHDC Color Baseline
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - name: Checkout
+      - name: Checkout project
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -28,6 +28,8 @@ jobs:
 
       - name: Clone PIFuHDC
         run: |
+          rm -rf pifuhdc
+
           git clone --depth 1 \
             https://github.com/xiahongchi/PIFuHDC.git \
             pifuhdc
@@ -45,246 +47,294 @@ jobs:
             pillow \
             tqdm \
             trimesh \
-            requests
+            requests \
+            gdown
 
           pip install torch==2.1.2 torchvision==0.16.2 \
             --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Inspect PIFuHDC
+      - name: Show environment
         run: |
-          echo "===== PIFuHDC files ====="
-          find pifuhdc -maxdepth 2 -type f | sort
+          python --version
 
-          echo "===== Download script ====="
-          cat pifuhdc/scripts/download_trained_model.sh
+          python - <<'PY'
+          import torch
+          import torchvision
 
-      # --------------------------------------------------
-      # PIFuHD checkpoint
-      # --------------------------------------------------
+          print("PyTorch:", torch.__version__)
+          print("TorchVision:", torchvision.__version__)
+          print("CUDA available:", torch.cuda.is_available())
+          PY
 
-      - name: Download PIFuHD checkpoint
+      # ==========================================================
+      # DOWNLOAD MODELS
+      # ==========================================================
+
+      - name: Prepare checkpoint directory
         run: |
           mkdir -p pifuhdc/checkpoints
 
-          wget -O pifuhdc/checkpoints/pifuhd.pt \
-            https://dl.fbaipublicfiles.com/pifuhd/checkpoints/pifuhd.pt
+          rm -f pifuhdc/checkpoints/pifuhd.pt
+          rm -f pifuhdc/checkpoints/pifuhd.pt.1
+          rm -f pifuhdc/checkpoints/net_C_HD.pt
 
-      - name: Verify PIFuHD checkpoint
+      - name: Download PIFuHD checkpoint
         run: |
-          ls -lh pifuhdc/checkpoints/pifuhd.pt
-
-          python - <<'PY'
-          import os
-
-          p = "pifuhdc/checkpoints/pifuhd.pt"
-          size = os.path.getsize(p)
-
-          print("PIFuHD checkpoint bytes:", size)
-          print("PIFuHD checkpoint MB:", round(size / 1024 / 1024, 2))
-
-          if size < 1_400_000_000:
-              raise RuntimeError("PIFuHD checkpoint is unexpectedly small")
-
-          print("PIFuHD checkpoint OK")
-          PY
-
-      # --------------------------------------------------
-      # PIFuHDC color checkpoint
-      # --------------------------------------------------
+          wget \
+            --progress=dot:giga \
+            -O pifuhdc/checkpoints/pifuhd.pt \
+            https://dl.fbaipublicfiles.com/pifuhd/checkpoints/pifuhd.pt
 
       - name: Download PIFuHDC color checkpoint
         run: |
-          echo "Searching repository metadata for net_C_HD.pt"
+          gdown \
+            "https://drive.google.com/uc?id=1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM" \
+            -O pifuhdc/checkpoints/net_C_HD.pt
 
-          grep -Rni \
-            "net_C_HD" \
-            pifuhdc \
-            --exclude="*.pyc" \
-            || true
+      # ==========================================================
+      # VERIFY MODELS
+      # ==========================================================
 
-          echo "===== checkpoint directory ====="
-          ls -lah pifuhdc/checkpoints
-
-      - name: Run official PIFuHDC downloader
+      - name: Verify both checkpoints
         run: |
-          cd pifuhdc
+          python - <<'PY'
+          import os
 
-          # Run downloader only for the color model.
-          # The PIFuHD model is already downloaded explicitly above.
-          bash scripts/download_trained_model.sh || true
+          models = [
+              "pifuhdc/checkpoints/pifuhd.pt",
+              "pifuhdc/checkpoints/net_C_HD.pt"
+          ]
 
-          echo "===== checkpoints after downloader ====="
-          ls -lah checkpoints
+          print()
+          print("======================================")
+          print("PIFuHDC MODEL VERIFICATION")
+          print("======================================")
 
-      - name: Locate color checkpoint
+          for path in models:
+              print()
+              print("Model:", path)
+
+              if not os.path.exists(path):
+                  raise RuntimeError(
+                      "MODEL MISSING: " + path
+                  )
+
+              size = os.path.getsize(path)
+
+              print(
+                  "Bytes:",
+                  size
+              )
+
+              print(
+                  "MB:",
+                  round(size / 1024 / 1024, 2)
+              )
+
+              print(
+                  "GB:",
+                  round(size / 1024 / 1024 / 1024, 3)
+              )
+
+              if size < 10 * 1024 * 1024:
+                  raise RuntimeError(
+                      "Model is suspiciously small: " + path
+                  )
+
+          print()
+          print("Both checkpoints downloaded successfully.")
+          PY
+
+      - name: List checkpoints
         run: |
-          echo "===== Searching for color checkpoint ====="
+          ls -lh pifuhdc/checkpoints/
 
-          find pifuhdc \
-            -type f \
-            \( -iname "*net_C*" -o -iname "*color*" \) \
-            -printf "%p %s bytes\n" \
-            || true
+      # ==========================================================
+      # MODEL STRUCTURE ANALYSIS
+      # ==========================================================
 
-      # --------------------------------------------------
-      # Create test image
-      # --------------------------------------------------
+      - name: Analyze PIFuHD checkpoint
+        run: |
+          python - <<'PY'
+          import torch
+          import os
 
-      - name: Prepare test input
+          path = "pifuhdc/checkpoints/pifuhd.pt"
+
+          print()
+          print("======================================")
+          print("PIFuHD CHECKPOINT ANALYSIS")
+          print("======================================")
+
+          obj = torch.load(
+              path,
+              map_location="cpu"
+          )
+
+          print("Object type:", type(obj))
+
+          if isinstance(obj, dict):
+              print("Top-level keys:")
+
+              for key in list(obj.keys())[:30]:
+                  print(" -", key)
+
+          print("Checkpoint loaded successfully.")
+          PY
+
+      - name: Analyze PIFuHDC color checkpoint
+        run: |
+          python - <<'PY'
+          import torch
+
+          path = "pifuhdc/checkpoints/net_C_HD.pt"
+
+          print()
+          print("======================================")
+          print("PIFuHDC COLOR CHECKPOINT ANALYSIS")
+          print("======================================")
+
+          obj = torch.load(
+              path,
+              map_location="cpu"
+          )
+
+          print("Object type:", type(obj))
+
+          if isinstance(obj, dict):
+              print("Top-level keys:")
+
+              for key in list(obj.keys())[:30]:
+                  print(" -", key)
+
+          print("Color checkpoint loaded successfully.")
+          PY
+
+      # ==========================================================
+      # PREPARE TEST IMAGE
+      # ==========================================================
+
+      - name: Prepare test image
         run: |
           mkdir -p pifuhdc/images
           mkdir -p pifuhdc/results
 
           python - <<'PY'
-          from PIL import Image, ImageDraw
+          from PIL import Image
 
-          img = Image.new("RGB", (512, 512), "white")
-          d = ImageDraw.Draw(img)
+          # Copy our existing test image if available.
+          import os
+          import shutil
 
-          d.ellipse(
-              (210, 60, 302, 152),
-              outline="black",
-              width=4
-          )
+          source = "samples/input/test_person.png"
+          destination = "pifuhdc/images/test_person.png"
 
-          d.rectangle(
-              (175, 150, 337, 365),
-              outline="black",
-              width=4
-          )
+          if os.path.exists(source):
+              shutil.copy2(
+                  source,
+                  destination
+              )
+              print("Using existing test image.")
+          else:
+              # Fallback image.
+              img = Image.new(
+                  "RGB",
+                  (512, 512),
+                  "white"
+              )
 
-          d.line(
-              (220, 190, 150, 300),
-              fill="black",
-              width=5
-          )
+              img.save(destination)
 
-          d.line(
-              (292, 190, 362, 300),
-              fill="black",
-              width=5
-          )
-
-          d.line(
-              (220, 365, 170, 450),
-              fill="black",
-              width=5
-          )
-
-          d.line(
-              (292, 365, 342, 450),
-              fill="black",
-              width=5
-          )
-
-          img.save(
-              "pifuhdc/images/test_person.png"
-          )
-
-          print("Test image created")
+              print("Created fallback test image.")
           PY
 
-      # --------------------------------------------------
-      # Check test command
-      # --------------------------------------------------
+      # ==========================================================
+      # CHECK PIFuHDC TEST PROGRAM
+      # ==========================================================
 
-      - name: Check PIFuHDC test arguments
+      - name: Inspect color test program
         run: |
           cd pifuhdc
 
-          python -m apps.test_colorHD --help \
-            || python apps/test_colorHD.py --help \
-            || true
+          echo "===== test_colorHD.py ====="
 
-      # --------------------------------------------------
-      # Run color reconstruction
-      # --------------------------------------------------
+          if [ -f apps/test_colorHD.py ]; then
+            sed -n '1,260p' apps/test_colorHD.py
+          else
+            echo "test_colorHD.py not found"
+            find apps -maxdepth 2 -type f | sort
+          fi
 
-      - name: Run PIFuHDC
+      # ==========================================================
+      # RUN PIFuHDC
+      # ==========================================================
+
+      - name: Run PIFuHDC color reconstruction
         run: |
           cd pifuhdc
-
-          if [ ! -f checkpoints/pifuhd.pt ]; then
-            echo "ERROR: pifuhd.pt missing"
-            exit 1
-          fi
-
-          COLOR=$(find checkpoints \
-            -type f \
-            \( -name "net_C_HD.pt" -o -name "*C_HD*.pt" \) \
-            | head -1)
-
-          if [ -z "$COLOR" ]; then
-            echo "ERROR: net_C_HD.pt was not found."
-            echo "Available checkpoints:"
-            find checkpoints -type f -printf "%p %s bytes\n"
-            exit 1
-          fi
-
-          echo "Color checkpoint:"
-          echo "$COLOR"
 
           python -m apps.test_colorHD \
             --input_path ./images \
             --out_path ./results \
             --ckpt_path ./checkpoints/pifuhd.pt \
-            --ckpt_path_Color "$COLOR"
+            --ckpt_path_Color ./checkpoints/net_C_HD.pt
 
-      # --------------------------------------------------
-      # Inspect output
-      # --------------------------------------------------
+      # ==========================================================
+      # INSPECT RESULT
+      # ==========================================================
 
-      - name: Inspect reconstruction
+      - name: Inspect generated 3D files
         if: always()
         run: |
-          echo "===== PIFuHDC OUTPUT ====="
+          echo "======================================"
+          echo "PIFuHDC RESULTS"
+          echo "======================================"
 
           find pifuhdc/results \
             -type f \
-            -printf "%p %s bytes\n" \
+            -printf "%p | %s bytes\n" \
             2>/dev/null || true
 
-      # --------------------------------------------------
-      # Model analysis
-      # --------------------------------------------------
+      # ==========================================================
+      # SAVE MODEL REPORT
+      # ==========================================================
 
-      - name: Analyze checkpoints
+      - name: Create model report
         if: always()
         run: |
-          python - <<'PY'
-          import os
+          mkdir -p reports
 
-          root = "pifuhdc/checkpoints"
+          {
+            echo "PIFuHDC MODEL REPORT"
+            echo "===================="
+            echo
+            echo "PIFuHD:"
+            ls -lh pifuhdc/checkpoints/pifuhd.pt
+            echo
+            echo "PIFuHDC Color:"
+            ls -lh pifuhdc/checkpoints/net_C_HD.pt
+            echo
+            echo "Generated files:"
+            find pifuhdc/results \
+              -type f \
+              -printf "%p %s bytes\n" \
+              2>/dev/null || true
+          } > reports/pifuhdc_model_report.txt
 
-          print("CHECKPOINT ANALYSIS")
-          print("===================")
+          cat reports/pifuhdc_model_report.txt
 
-          for root_dir, dirs, files in os.walk(root):
-              for name in files:
-                  path = os.path.join(root_dir, name)
-                  size = os.path.getsize(path)
+      # ==========================================================
+      # UPLOAD EVERYTHING WE NEED
+      # ==========================================================
 
-                  print(
-                      name,
-                      "|",
-                      size,
-                      "bytes |",
-                      round(size / 1024 / 1024, 2),
-                      "MB"
-                  )
-          PY
-
-      # --------------------------------------------------
-      # Upload
-      # --------------------------------------------------
-
-      - name: Upload PIFuHDC artifact
+      - name: Upload PIFuHDC results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pifuhdc-baseline
+          name: pifuhdc-baseline-results
           path: |
             pifuhdc/results/
             pifuhdc/checkpoints/
+            reports/
           if-no-files-found: warn
           retention-days: 7
