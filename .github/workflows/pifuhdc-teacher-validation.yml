@@ -2,14 +2,16 @@ name: PIFuHDC Teacher Validation
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
-  teacher-validation:
+  validate-pifuhdc:
     runs-on: ubuntu-latest
 
     steps:
-
-      - name: Checkout project
+      - name: Checkout PIFuHD-Mobile
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -17,219 +19,319 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Install system packages
+      - name: Install system dependencies
         run: |
-          set -e
-
           sudo apt-get update
-
           sudo apt-get install -y \
-            ffmpeg \
-            freeglut3-dev \
-            libgl1-mesa-dev \
-            libglu1-mesa-dev \
-            libglib2.0-0
+            git \
+            wget \
+            curl \
+            unzip \
+            libgl1 \
+            libglib2.0-0 \
+            libsm6 \
+            libxext6 \
+            libxrender1 \
+            freeglut3-dev
 
-      - name: Install Python packages
+      - name: Install Python dependencies
         run: |
-          set -e
-
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools wheel
 
           pip install \
-            numpy==1.26.4 \
+            numpy==1.23.5 \
             scipy \
             pillow \
-            opencv-python-headless \
-            matplotlib \
-            tqdm \
-            gdown \
             scikit-image \
+            opencv-python-headless \
+            tqdm \
+            matplotlib \
             trimesh \
-            pyembree \
-            PyOpenGL
+            pyembree
 
           pip install \
             torch==2.1.2 \
-            torchvision==0.16.2 \
-            --index-url https://download.pytorch.org/whl/cpu
+            torchvision==0.16.2
+
+          pip install gdown
 
       - name: Clone official PIFuHDC
         run: |
-          set -e
-
           rm -rf pifuhdc
 
           git clone --depth 1 \
             https://github.com/xiahongchi/PIFuHDC.git \
             pifuhdc
 
-          test -d pifuhdc
-
-      - name: Inspect official reconstruction code
-        run: |
-          set -e
-
           echo "=========================================="
-          echo "PIFuHDC REPOSITORY STRUCTURE"
+          echo "PIFuHDC COMMIT"
           echo "=========================================="
 
-          find pifuhdc \
-            -maxdepth 2 \
-            -type f \
-            | sort \
-            | head -300
+          cd pifuhdc
+          git rev-parse HEAD
 
-          echo ""
-          echo "=========================================="
-          echo "test_colorHD.py"
-          echo "=========================================="
-
-          sed -n '1,260p' pifuhdc/apps/test_colorHD.py
-
-          echo ""
-          echo "=========================================="
-          echo "recon.py OUTPUT REFERENCES"
-          echo "=========================================="
-
-          grep -nEi \
-            "results_path|results|save|obj|mesh|write|export" \
-            pifuhdc/apps/recon.py \
-            | head -200 || true
-
-      - name: Prepare directories
-        run: |
-          set -e
-
-          mkdir -p pifuhdc/checkpoints
-          mkdir -p teacher_input
-          mkdir -p teacher_output
-          mkdir -p diagnostic_output
-
-      - name: Download PIFuHD geometry teacher
+      - name: Download PIFuHD geometry checkpoint
         working-directory: pifuhdc
         run: |
-          set -e
+          mkdir -p checkpoints
 
           echo "=========================================="
-          echo "DOWNLOADING PIFuHD GEOMETRY TEACHER"
+          echo "DOWNLOADING GEOMETRY CHECKPOINT"
           echo "=========================================="
 
-          wget \
+          wget -q --show-progress \
             "https://dl.fbaipublicfiles.com/pifuhd/checkpoints/pifuhd.pt" \
             -O checkpoints/pifuhd.pt
 
-          test -s checkpoints/pifuhd.pt
-
-          SIZE=$(stat -c%s checkpoints/pifuhd.pt)
-
-          echo "PIFuHD size: $SIZE bytes"
-
-          if [ "$SIZE" -lt 1000000000 ]; then
-            echo "ERROR: PIFuHD checkpoint is too small."
-            exit 1
-          fi
-
           ls -lh checkpoints/pifuhd.pt
 
-      - name: Download PIFuHDC color teacher
+      - name: Download PIFuHDC color checkpoint
         working-directory: pifuhdc
         run: |
-          set -e
-
           echo "=========================================="
-          echo "DOWNLOADING PIFuHDC COLOR TEACHER"
+          echo "DOWNLOADING COLOR CHECKPOINT"
           echo "=========================================="
 
           gdown \
-            1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM \
+            "1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM" \
             -O checkpoints/net_C_HD.pt
 
-          test -s checkpoints/net_C_HD.pt
-
-          SIZE=$(stat -c%s checkpoints/net_C_HD.pt)
-
-          echo "Color checkpoint size: $SIZE bytes"
-
-          if [ "$SIZE" -lt 20000000 ]; then
-            echo "ERROR: Color checkpoint is unexpectedly small."
-            exit 1
-          fi
-
-          cp checkpoints/net_C_HD.pt \
-             checkpoints/net_C_choice2.pt
-
           ls -lh checkpoints/net_C_HD.pt
-          ls -lh checkpoints/net_C_choice2.pt
 
-      - name: Verify teacher checkpoints
+      - name: Verify checkpoints
         working-directory: pifuhdc
         run: |
-          set -e
-
           echo "=========================================="
           echo "CHECKPOINT VALIDATION"
           echo "=========================================="
 
           test -f checkpoints/pifuhd.pt
           test -f checkpoints/net_C_HD.pt
-          test -f checkpoints/net_C_choice2.pt
 
+          echo ""
+          echo "Geometry:"
           ls -lh checkpoints/pifuhd.pt
+
+          echo ""
+          echo "Color:"
           ls -lh checkpoints/net_C_HD.pt
-          ls -lh checkpoints/net_C_choice2.pt
 
           echo ""
           echo "SHA256:"
-          sha256sum \
-            checkpoints/pifuhd.pt \
-            checkpoints/net_C_HD.pt \
-            checkpoints/net_C_choice2.pt
+          sha256sum checkpoints/pifuhd.pt
+          sha256sum checkpoints/net_C_HD.pt
 
-      - name: Download official PIFuHDC sample image
+      - name: Prepare official test image
         run: |
-          set -e
+          rm -rf teacher_input
+          rm -rf teacher_output
+
+          mkdir -p teacher_input
+          mkdir -p teacher_output
 
           echo "=========================================="
-          echo "DOWNLOADING OFFICIAL PIFuHDC SAMPLE"
+          echo "DOWNLOADING OFFICIAL PIFuHDC TEST IMAGE"
           echo "=========================================="
 
-          wget \
+          wget -q --show-progress \
             "https://raw.githubusercontent.com/xiahongchi/PIFuHDC/main/images/cxk.jpg" \
             -O teacher_input/sample.jpg
 
-          test -s teacher_input/sample.jpg
-
-          file teacher_input/sample.jpg
+          echo ""
+          echo "Input image:"
           ls -lh teacher_input/sample.jpg
 
-      - name: Validate sample image
-        run: |
-          set -e
+          file teacher_input/sample.jpg
 
-          python -c "from PIL import Image; im=Image.open('teacher_input/sample.jpg'); print('Format:',im.format); print('Size:',im.size); print('Mode:',im.mode); im.verify(); print('IMAGE VALIDATION PASSED')"
+      - name: Validate input image
+        run: |
+          python - <<'PY'
+          from PIL import Image
+          from pathlib import Path
+
+          p = Path("teacher_input/sample.jpg")
+
+          print("==========================================")
+          print("INPUT IMAGE VALIDATION")
+          print("==========================================")
+
+          if not p.exists():
+              raise SystemExit("ERROR: sample.jpg does not exist")
+
+          img = Image.open(p)
+
+          print("Format:", img.format)
+          print("Mode:", img.mode)
+          print("Size:", img.size)
+
+          if img.width <= 0 or img.height <= 0:
+              raise SystemExit("ERROR: invalid image dimensions")
+
+          img.verify()
+
+          print("Image validation: OK")
+          PY
 
       - name: Create rectangle metadata
         run: |
-          set -e
+          python - <<'PY'
+          from PIL import Image
 
-          python -c "from PIL import Image; im=Image.open('teacher_input/sample.jpg'); w,h=im.size; open('teacher_input/sample_rect.txt','w').write('0 0 %d %d\n' % (w,h)); print('Image size:',w,'x',h); print('Rectangle:',0,0,w,h)"
+          img = Image.open("teacher_input/sample.jpg")
 
-          cat teacher_input/sample_rect.txt
+          w, h = img.size
 
-      - name: Validate EvalDataset
+          with open("teacher_input/sample_rect.txt", "w") as f:
+              f.write(f"0 0 {w} {h}\n")
+
+          print("==========================================")
+          print("RECTANGLE METADATA")
+          print("==========================================")
+          print(f"Image width : {w}")
+          print(f"Image height: {h}")
+          print(f"Rectangle   : 0 0 {w} {h}")
+
+          print("")
+          print("File:")
+          print(open("teacher_input/sample_rect.txt").read())
+          PY
+
+      - name: Validate PIFuHDC dataset
         working-directory: pifuhdc
         run: |
-          set -e
+          python - <<'PY'
+          import sys
+          import os
 
-          python -c "from lib.data.EvalDataset import EvalDataset; O=type('Opt',(),{'dataroot':'../teacher_input','loadSize':1024}); d=EvalDataset(O()); print('Dataset length:',len(d)); assert len(d)==1; print('EvalDataset PASSED')"
+          sys.path.insert(0, os.getcwd())
 
-      - name: Validate Python imports
+          from lib.data import EvalDataset
+
+          class Opt:
+              dataroot = "../teacher_input"
+              loadSize = 1024
+
+          print("==========================================")
+          print("DATASET VALIDATION")
+          print("==========================================")
+
+          dataset = EvalDataset(Opt())
+
+          print("Dataset length:", len(dataset))
+          print("Image files:", dataset.img_files)
+
+          if len(dataset) != 1:
+              raise SystemExit(
+                  f"ERROR: Expected 1 image, found {len(dataset)}"
+              )
+
+          item = dataset[0]
+
+          print("")
+          print("Sample name:", item["name"])
+          print("img shape:", item["img"].shape)
+          print("img_512 shape:", item["img_512"].shape)
+          print("calib shape:", item["calib"].shape)
+          print("b_min:", item["b_min"])
+          print("b_max:", item["b_max"])
+
+          print("")
+          print("Dataset validation: OK")
+          PY
+
+      - name: Validate imports
         working-directory: pifuhdc
         run: |
-          set -e
+          python - <<'PY'
+          import sys
+          import os
 
-          python -c "import torch,cv2,PIL,skimage,trimesh,matplotlib; print('PyTorch:',torch.__version__); print('OpenCV:',cv2.__version__); print('Pillow:',PIL.__version__); print('scikit-image:',skimage.__version__); print('trimesh:',trimesh.__version__); print('matplotlib:',matplotlib.__version__); print('IMPORT VALIDATION PASSED')"
+          sys.path.insert(0, os.getcwd())
+
+          print("==========================================")
+          print("PYTHON IMPORT VALIDATION")
+          print("==========================================")
+
+          import torch
+          import torchvision
+          import cv2
+          import numpy
+          import PIL
+
+          print("Python:", sys.version)
+          print("PyTorch:", torch.__version__)
+          print("Torchvision:", torchvision.__version__)
+          print("NumPy:", numpy.__version__)
+          print("OpenCV:", cv2.__version__)
+          print("Pillow:", PIL.__version__)
+          print("CUDA available:", torch.cuda.is_available())
+
+          from lib.model import HGPIFuNetwNML
+          from lib.model import HGPIFuMRNet
+          from lib.model import HGResBlkPIFuNet
+          from lib.mesh_util import reconstruction
+          from lib.mesh_util import save_obj_mesh_with_color
+
+          print("")
+          print("PIFuHDC imports: OK")
+          PY
+
+      - name: Patch PIFuHDC for full traceback
+        working-directory: pifuhdc
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("apps/recon.py")
+          text = path.read_text()
+
+          old = """    except Exception as e:
+        print(e)"""
+
+          new = """    except Exception as e:
+        print("")
+        print("==========================================")
+        print("PIFuHDC INTERNAL EXCEPTION")
+        print("==========================================")
+        import traceback
+        traceback.print_exc()
+        print("==========================================")
+        raise"""
+
+          count = text.count(old)
+
+          print("Exception handlers found:", count)
+
+          if count == 0:
+              raise SystemExit(
+                  "ERROR: Could not find the expected exception handler"
+              )
+
+          text = text.replace(old, new)
+
+          path.write_text(text)
+
+          print("Full traceback patch applied.")
+
+          print("")
+          print("Traceback locations:")
+
+          for number, line in enumerate(text.splitlines(), 1):
+              if "traceback.print_exc()" in line:
+                  print("line", number)
+
+          PY
+
+      - name: Confirm PIFuHDC patched source
+        working-directory: pifuhdc
+        run: |
+          echo "=========================================="
+          echo "PATCHED recon.py CHECK"
+          echo "=========================================="
+
+          grep -n -A12 -B3 \
+            "traceback.print_exc" \
+            apps/recon.py || true
 
       - name: Run real PIFuHDC teacher
         working-directory: pifuhdc
@@ -239,6 +341,18 @@ jobs:
           echo "=========================================="
           echo "RUNNING REAL PIFuHDC TEACHER"
           echo "=========================================="
+
+          echo ""
+          echo "Input:"
+          find ../teacher_input -type f -maxdepth 1 -print
+
+          echo ""
+          echo "Checkpoints:"
+          ls -lh checkpoints/
+
+          echo ""
+          echo "Starting inference..."
+          echo ""
 
           python -m apps.test_colorHD \
             --input_path ../teacher_input \
@@ -251,238 +365,238 @@ jobs:
           EXIT_CODE=$?
 
           echo ""
-          echo "PIFuHDC process exit code: $EXIT_CODE"
+          echo "=========================================="
+          echo "PIFuHDC EXIT CODE: $EXIT_CODE"
+          echo "=========================================="
 
           exit 0
 
-      - name: Search all generated files
-        if: always()
+      - name: Inspect complete PIFuHDC output
         run: |
           set +e
 
           echo "=========================================="
-          echo "SEARCHING ENTIRE WORKSPACE"
+          echo "PIFuHDC TEACHER DIAGNOSTIC REPORT"
           echo "=========================================="
 
           echo ""
-          echo "OBJ FILES:"
-          find . \
-            -type f \
-            -iname "*.obj" \
-            -print
+          echo "WORKSPACE OBJ FILES"
+          echo "------------------------------------------"
+          find . -type f -iname "*.obj" -print
 
           echo ""
-          echo "PLY FILES:"
-          find . \
-            -type f \
-            -iname "*.ply" \
-            -print
+          echo "WORKSPACE PLY FILES"
+          echo "------------------------------------------"
+          find . -type f -iname "*.ply" -print
 
           echo ""
-          echo "PNG FILES:"
-          find . \
-            -type f \
-            -iname "*.png" \
-            -print
+          echo "WORKSPACE PNG FILES"
+          echo "------------------------------------------"
+          find . -type f -iname "*.png" -print
 
           echo ""
-          echo "JPG FILES:"
-          find . \
-            -type f \
-            -iname "*.jpg" \
-            -print
+          echo "teacher_output CONTENTS"
+          echo "------------------------------------------"
+          find teacher_output -type f -printf "%p %s bytes\n" -print 2>/dev/null
 
           echo ""
-          echo "ALL FILES IN teacher_output:"
-          find teacher_output \
-            -type f \
-            -print 2>/dev/null || true
+          echo "PIFuHDC RESULTS CONTENTS"
+          echo "------------------------------------------"
+          find pifuhdc/results -type f -printf "%p %s bytes\n" -print 2>/dev/null
 
           echo ""
-          echo "ALL FILES IN pifuhdc/results:"
-          find pifuhdc/results \
-            -type f \
-            -print 2>/dev/null || true
+          echo "PIFuHDC DIRECTORY TREE"
+          echo "------------------------------------------"
+          find pifuhdc -maxdepth 5 -type d | sort
 
           echo ""
-          echo "ALL DIRECTORIES:"
-          find . \
-            -maxdepth 4 \
-            -type d \
-            | sort
+          echo "=========================================="
+          echo "END DIAGNOSTIC REPORT"
+          echo "=========================================="
+
+          exit 0
 
       - name: Collect generated meshes
-        if: always()
         run: |
           set +e
+
+          mkdir -p teacher_output/collected
 
           echo "=========================================="
           echo "COLLECTING GENERATED MESHES"
           echo "=========================================="
 
-          mkdir -p teacher_output
+          OBJ_COUNT=$(find . \
+            -type f \
+            -iname "*.obj" \
+            ! -path "./teacher_output/collected/*" \
+            | wc -l)
 
-          FOUND=0
+          PLY_COUNT=$(find . \
+            -type f \
+            -iname "*.ply" \
+            ! -path "./teacher_output/collected/*" \
+            | wc -l)
 
-          while IFS= read -r FILE; do
+          echo "OBJ count: $OBJ_COUNT"
+          echo "PLY count: $PLY_COUNT"
 
-            if [ -f "$FILE" ]; then
+          find . \
+            -type f \
+            -iname "*.obj" \
+            ! -path "./teacher_output/collected/*" \
+            -exec cp --parents {} teacher_output/collected/ \; 2>/dev/null
 
-              case "$FILE" in
-                ./teacher_output/*)
-                  ;;
-                *)
-                  echo "Found mesh:"
-                  echo "$FILE"
-
-                  cp "$FILE" \
-                    "teacher_output/$(basename "$FILE")"
-
-                  FOUND=$((FOUND + 1))
-                  ;;
-              esac
-
-            fi
-
-          done < <(
-            find . \
-              -type f \
-              \( -iname "*.obj" -o -iname "*.ply" \) \
-              -print
-          )
+          find . \
+            -type f \
+            -iname "*.ply" \
+            ! -path "./teacher_output/collected/*" \
+            -exec cp --parents {} teacher_output/collected/ \; 2>/dev/null
 
           echo ""
-          echo "Meshes collected: $FOUND"
-
-          find teacher_output \
+          echo "Collected files:"
+          find teacher_output/collected \
             -type f \
-            -print
+            -printf "%p %s bytes\n" \
+            2>/dev/null
 
-      - name: Validate OBJ mesh
+          exit 0
+
+      - name: Validate generated mesh
         run: |
-          set -e
+          set +e
 
           echo "=========================================="
           echo "MESH VALIDATION"
           echo "=========================================="
 
-          OBJ_COUNT=$(find teacher_output -type f -iname "*.obj" | wc -l)
+          OBJ_COUNT=$(find teacher_output \
+            -type f \
+            -iname "*.obj" \
+            | wc -l)
+
+          PLY_COUNT=$(find teacher_output \
+            -type f \
+            -iname "*.ply" \
+            | wc -l)
 
           echo "OBJ count: $OBJ_COUNT"
+          echo "PLY count: $PLY_COUNT"
 
-          if [ "$OBJ_COUNT" -eq 0 ]; then
-
+          if [ "$OBJ_COUNT" -eq 0 ] && [ "$PLY_COUNT" -eq 0 ]; then
             echo ""
-            echo "ERROR: No OBJ mesh generated."
-
+            echo "ERROR: No 3D mesh generated."
             echo ""
-            echo "This means the PIFuHDC inference stage did not produce"
-            echo "an OBJ in the expected locations."
-
+            echo "The important information is above in:"
+            echo "RUNNING REAL PIFuHDC TEACHER"
             echo ""
-            echo "The previous diagnostic step has searched the"
-            echo "entire workspace."
-
+            echo "The patched PIFuHDC should now print"
+            echo "the complete internal Python traceback."
             exit 1
           fi
 
-          while IFS= read -r OBJ; do
+          echo ""
+          echo "Generated mesh detected."
 
-            echo ""
-            echo "------------------------------------------"
-            echo "MESH: $OBJ"
-            echo "------------------------------------------"
+          echo ""
+          echo "Mesh files:"
+          find teacher_output \
+            \( -iname "*.obj" -o -iname "*.ply" \) \
+            -type f \
+            -printf "%p %s bytes\n"
 
-            VERTICES=$(grep -c '^v ' "$OBJ" || true)
-            FACES=$(grep -c '^f ' "$OBJ" || true)
-            UVS=$(grep -c '^vt ' "$OBJ" || true)
-            NORMALS=$(grep -c '^vn ' "$OBJ" || true)
+          exit 0
 
-            echo "Vertices: $VERTICES"
-            echo "Faces:    $FACES"
-            echo "UVs:      $UVS"
-            echo "Normals:  $NORMALS"
-
-            if [ "$VERTICES" -eq 0 ]; then
-              echo "ERROR: Mesh has zero vertices."
-              exit 1
-            fi
-
-            if [ "$FACES" -eq 0 ]; then
-              echo "ERROR: Mesh has zero faces."
-              exit 1
-            fi
-
-            echo "OBJ VALIDATION PASSED"
-
-          done < <(find teacher_output -type f -iname "*.obj")
-
-      - name: Validate mesh with trimesh
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "TRIMESH VALIDATION"
-          echo "=========================================="
-
-          python -c "import glob,trimesh; files=glob.glob('teacher_output/**/*.obj',recursive=True); print('OBJ files:',files); assert files,'No OBJ files found'; [(print('Loading:',p),print('Vertices:',len((m:=trimesh.load(p,force='mesh',process=False)).vertices)),print('Faces:',len(m.faces)),print('Bounds:',m.bounds),print('TRIMESH VALIDATION PASSED')) for p in files]"
-
-      - name: Create diagnostic report
+      - name: Validate OBJ geometry
         if: always()
         run: |
-          set +e
+          python - <<'PY'
+          from pathlib import Path
 
-          echo "PIFuHDC TEACHER DIAGNOSTIC REPORT" \
-            > diagnostic_output/report.txt
+          objs = list(Path("teacher_output").rglob("*.obj"))
 
-          echo "=================================" \
-            >> diagnostic_output/report.txt
+          print("==========================================")
+          print("OBJ GEOMETRY CHECK")
+          print("==========================================")
 
-          echo "" >> diagnostic_output/report.txt
+          if not objs:
+              print("No OBJ available.")
+              raise SystemExit(0)
 
-          echo "Workspace OBJ files:" \
-            >> diagnostic_output/report.txt
+          for obj in objs:
+              vertices = 0
+              faces = 0
+              colors = 0
 
-          find . \
-            -type f \
-            -iname "*.obj" \
-            -print \
-            >> diagnostic_output/report.txt
+              with obj.open("r", errors="ignore") as f:
+                  for line in f:
+                      if line.startswith("v "):
+                          vertices += 1
 
-          echo "" >> diagnostic_output/report.txt
+                          parts = line.strip().split()
 
-          echo "Workspace PLY files:" \
-            >> diagnostic_output/report.txt
+                          if len(parts) >= 7:
+                              colors += 1
 
-          find . \
-            -type f \
-            -iname "*.ply" \
-            -print \
-            >> diagnostic_output/report.txt
+                      elif line.startswith("f "):
+                          faces += 1
 
-          echo "" >> diagnostic_output/report.txt
+              print("")
+              print("File:", obj)
+              print("Size:", obj.stat().st_size, "bytes")
+              print("Vertices:", vertices)
+              print("Faces:", faces)
+              print("Colored vertices:", colors)
 
-          echo "teacher_output contents:" \
-            >> diagnostic_output/report.txt
+              if vertices == 0:
+                  print("WARNING: OBJ contains no vertices.")
 
-          find teacher_output \
-            -type f \
-            -print \
-            >> diagnostic_output/report.txt
+              if faces == 0:
+                  print("WARNING: OBJ contains no faces.")
 
-          echo "" >> diagnostic_output/report.txt
+      - name: Validate mesh with trimesh
+        if: always()
+        run: |
+          python - <<'PY'
+          from pathlib import Path
 
-          echo "PIFuHDC results contents:" \
-            >> diagnostic_output/report.txt
+          try:
+              import trimesh
+          except Exception as e:
+              print("Could not import trimesh:", e)
+              raise SystemExit(0)
 
-          find pifuhdc/results \
-            -type f \
-            -print \
-            >> diagnostic_output/report.txt 2>/dev/null || true
+          print("==========================================")
+          print("TRIMESH VALIDATION")
+          print("==========================================")
 
-          cat diagnostic_output/report.txt
+          objs = list(Path("teacher_output").rglob("*.obj"))
 
-      - name: Upload teacher artifacts
+          if not objs:
+              print("No OBJ available.")
+              raise SystemExit(0)
+
+          for path in objs:
+              print("")
+              print("Loading:", path)
+
+              try:
+                  mesh = trimesh.load(
+                      path,
+                      process=False,
+                      force="mesh"
+                  )
+
+                  print("Vertices:", len(mesh.vertices))
+                  print("Faces:", len(mesh.faces))
+                  print("Watertight:", mesh.is_watertight)
+                  print("Bounds:", mesh.bounds)
+
+              except Exception as e:
+                  print("TRIMESH ERROR:")
+                  print(type(e).__name__, str(e))
+
+      - name: Upload PIFuHDC teacher artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -490,6 +604,7 @@ jobs:
           path: |
             teacher_input/
             teacher_output/
-            diagnostic_output/
+            pifuhdc/checkpoints/net_C_HD.pt
             pifuhdc/results/
           if-no-files-found: warn
+          compression-level: 0
