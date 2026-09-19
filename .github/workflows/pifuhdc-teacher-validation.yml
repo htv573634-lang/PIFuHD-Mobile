@@ -283,7 +283,7 @@ jobs:
       # ============================================================
       # VERIFY PIFUHDC MODULES
       #
-      # Do NOT import apps.test_colorHD.
+      # DO NOT import apps.test_colorHD.
       # It executes inference during import.
       # ============================================================
 
@@ -350,6 +350,7 @@ jobs:
 
               print("Changed:")
               print(old)
+
               print("")
               print("To:")
               print("checkpoints/net_C_HD.pt")
@@ -384,20 +385,19 @@ jobs:
 
               print("")
               print(
-                  "This may already be configured."
+                  "No color checkpoint replacement required."
               )
           PY
 
 
       # ============================================================
-      # PATCH MARCHING CUBES
+      # PATCH MARCHING CUBES DIAGNOSTICS
       #
-      # IMPORTANT:
-      # This modifies the CLONED official file:
+      # This modifies the cloned official file:
       #
       # pifuhdc/lib/mesh_util.py
       #
-      # It does NOT create a mesh_util.py in our repository.
+      # It does NOT create mesh_util.py in PIFuHD-Mobile.
       # ============================================================
 
       - name: Patch Marching Cubes diagnostics
@@ -411,6 +411,10 @@ jobs:
               "lib/mesh_util.py"
           )
 
+          print("==========================================")
+          print("MARCHING CUBES PATCH")
+          print("==========================================")
+
           if not path.exists():
               raise SystemExit(
                   "ERROR: pifuhdc/lib/mesh_util.py not found"
@@ -418,46 +422,50 @@ jobs:
 
           text = path.read_text()
 
-          print("==========================================")
-          print("MARCHING CUBES PATCH")
-          print("==========================================")
-
-          print(
-              "File:",
-              path
-          )
-
+          print("File:", path)
           print(
               "Original size:",
               len(text),
               "bytes"
           )
 
-          old = """    except:
-        print('error cannot marching cubes')
-        return -1"""
+          old_lines = [
+              "    except:",
+              "        print('error cannot marching cubes')",
+              "        return -1",
+          ]
 
-          new = """    except Exception as e:
-        print('')
-        print('==========================================')
-        print('MARCHING CUBES INTERNAL EXCEPTION')
-        print('==========================================')
-        print('Exception type:', type(e).__name__)
-        print('Exception message:', str(e))
-        print('')
-        print('scikit-image version:')
-        try:
-            import skimage
-            print(skimage.__version__)
-        except Exception:
-            print('Unable to determine scikit-image version')
-        print('')
-        print('FULL TRACEBACK')
-        print('------------------------------------------')
-        import traceback
-        traceback.print_exc()
-        print('==========================================')
-        raise"""
+          old = "\n".join(
+              old_lines
+          )
+
+          new_lines = [
+              "    except Exception as e:",
+              "        print('')",
+              "        print('==========================================')",
+              "        print('MARCHING CUBES INTERNAL EXCEPTION')",
+              "        print('==========================================')",
+              "        print('Exception type:', type(e).__name__)",
+              "        print('Exception message:', str(e))",
+              "        print('')",
+              "        print('scikit-image version:')",
+              "        try:",
+              "            import skimage",
+              "            print(skimage.__version__)",
+              "        except Exception:",
+              "            print('Unable to determine scikit-image version')",
+              "        print('')",
+              "        print('FULL TRACEBACK')",
+              "        print('------------------------------------------')",
+              "        import traceback",
+              "        traceback.print_exc()",
+              "        print('==========================================')",
+              "        raise",
+          ]
+
+          new = "\n".join(
+              new_lines
+          )
 
           if old not in text:
 
@@ -468,7 +476,7 @@ jobs:
 
               print("")
               print(
-                  "Searching for Marching Cubes code:"
+                  "Searching mesh_util.py:"
               )
 
               lines = text.splitlines()
@@ -487,7 +495,7 @@ jobs:
                       or
                       "cannot marching" in lower
                       or
-                      "except:" in lower
+                      line.strip() == "except:"
                   ):
 
                       start = max(
@@ -501,7 +509,7 @@ jobs:
                       )
 
                       print(
-                          f"\n--- lines {start}-{end} ---"
+                          f"--- lines {start}-{end} ---"
                       )
 
                       for i in range(
@@ -510,11 +518,11 @@ jobs:
                       ):
 
                           print(
-                              f"{i}: {lines[i-1]}"
+                              f"{i}: {lines[i - 1]}"
                           )
 
               raise SystemExit(
-                  "Patch stopped safely."
+                  "Marching Cubes patch stopped safely."
               )
 
           text = text.replace(
@@ -523,7 +531,9 @@ jobs:
               1
           )
 
-          path.write_text(text)
+          path.write_text(
+              text
+          )
 
           print("")
           print(
@@ -539,14 +549,14 @@ jobs:
 
 
       # ============================================================
-      # SHOW PATCHED FILE
+      # VERIFY MARCHING CUBES PATCH
       # ============================================================
 
-      - name: Verify patched mesh_util.py
+      - name: Verify Marching Cubes patch
         working-directory: pifuhdc
         run: |
           echo "=========================================="
-          echo "PATCHED mesh_util.py"
+          echo "VERIFYING MARCHING CUBES PATCH"
           echo "=========================================="
 
           grep -n \
@@ -667,7 +677,7 @@ jobs:
 
 
       # ============================================================
-      # SEARCH FOR MESH
+      # SEARCH GENERATED MESH
       # ============================================================
 
       - name: Search generated mesh
@@ -703,7 +713,7 @@ jobs:
 
 
       # ============================================================
-      # VALIDATE OBJ
+      # VALIDATE GENERATED OBJ
       # ============================================================
 
       - name: Validate generated OBJ
@@ -726,8 +736,10 @@ jobs:
           )
 
           if not objs:
+
               print("")
               print("No OBJ generated.")
+
               raise SystemExit(0)
 
           for obj in objs:
@@ -747,7 +759,10 @@ jobs:
 
                           vertices += 1
 
-                          if len(line.split()) >= 7:
+                          if len(
+                              line.split()
+                          ) >= 7:
+
                               colored += 1
 
                       elif line.startswith("f "):
@@ -845,11 +860,13 @@ jobs:
               print(mesh.bounds)
 
               if len(mesh.vertices) == 0:
+
                   raise SystemExit(
                       "Mesh has no vertices."
                   )
 
               if len(mesh.faces) == 0:
+
                   raise SystemExit(
                       "Mesh has no faces."
                   )
@@ -892,6 +909,7 @@ jobs:
 
           echo ""
           echo "Input files:"
+
           find teacher_input \
             -type f \
             -printf "%p %s bytes\n" \
@@ -899,6 +917,7 @@ jobs:
 
           echo ""
           echo "Output files:"
+
           find teacher_output \
             -type f \
             -printf "%p %s bytes\n" \
