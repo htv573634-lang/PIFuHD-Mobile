@@ -1,4 +1,4 @@
-name: Step 2 - PIFuHDC Color Baseline + Quantization
+name: Step 2 - PIFuHDC Baseline
 
 on:
   workflow_dispatch:
@@ -6,10 +6,10 @@ on:
 jobs:
   pifuhdc:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
-      - name: Checkout project
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -23,7 +23,6 @@ jobs:
           sudo apt-get install -y \
             git \
             wget \
-            unzip \
             libgl1 \
             libglib2.0-0
 
@@ -43,381 +42,249 @@ jobs:
             scikit-image \
             opencv-python-headless \
             matplotlib \
-            trimesh \
-            tqdm \
             pillow \
+            tqdm \
+            trimesh \
             requests
 
-          pip install torch torchvision \
+          pip install torch==2.1.2 torchvision==0.16.2 \
             --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Show environment
+      - name: Inspect PIFuHDC
         run: |
-          python --version
-          python -c "import torch; print('PyTorch:', torch.__version__)"
-          python -c "import torch; print('CUDA:', torch.cuda.is_available())"
+          echo "===== PIFuHDC files ====="
+          find pifuhdc -maxdepth 2 -type f | sort
 
-      - name: Download PIFuHDC pretrained models
+          echo "===== Download script ====="
+          cat pifuhdc/scripts/download_trained_model.sh
+
+      # --------------------------------------------------
+      # PIFuHD checkpoint
+      # --------------------------------------------------
+
+      - name: Download PIFuHD checkpoint
+        run: |
+          mkdir -p pifuhdc/checkpoints
+
+          wget -O pifuhdc/checkpoints/pifuhd.pt \
+            https://dl.fbaipublicfiles.com/pifuhd/checkpoints/pifuhd.pt
+
+      - name: Verify PIFuHD checkpoint
+        run: |
+          ls -lh pifuhdc/checkpoints/pifuhd.pt
+
+          python - <<'PY'
+          import os
+
+          p = "pifuhdc/checkpoints/pifuhd.pt"
+          size = os.path.getsize(p)
+
+          print("PIFuHD checkpoint bytes:", size)
+          print("PIFuHD checkpoint MB:", round(size / 1024 / 1024, 2))
+
+          if size < 1_400_000_000:
+              raise RuntimeError("PIFuHD checkpoint is unexpectedly small")
+
+          print("PIFuHD checkpoint OK")
+          PY
+
+      # --------------------------------------------------
+      # PIFuHDC color checkpoint
+      # --------------------------------------------------
+
+      - name: Download PIFuHDC color checkpoint
+        run: |
+          echo "Searching repository metadata for net_C_HD.pt"
+
+          grep -Rni \
+            "net_C_HD" \
+            pifuhdc \
+            --exclude="*.pyc" \
+            || true
+
+          echo "===== checkpoint directory ====="
+          ls -lah pifuhdc/checkpoints
+
+      - name: Run official PIFuHDC downloader
         run: |
           cd pifuhdc
 
-          chmod +x scripts/download_trained_model.sh
+          # Run downloader only for the color model.
+          # The PIFuHD model is already downloaded explicitly above.
+          bash scripts/download_trained_model.sh || true
 
-          ./scripts/download_trained_model.sh
+          echo "===== checkpoints after downloader ====="
+          ls -lah checkpoints
 
-          echo "===== CHECKPOINTS ====="
-          ls -lh checkpoints/
+      - name: Locate color checkpoint
+        run: |
+          echo "===== Searching for color checkpoint ====="
 
-      - name: Verify checkpoints
+          find pifuhdc \
+            -type f \
+            \( -iname "*net_C*" -o -iname "*color*" \) \
+            -printf "%p %s bytes\n" \
+            || true
+
+      # --------------------------------------------------
+      # Create test image
+      # --------------------------------------------------
+
+      - name: Prepare test input
+        run: |
+          mkdir -p pifuhdc/images
+          mkdir -p pifuhdc/results
+
+          python - <<'PY'
+          from PIL import Image, ImageDraw
+
+          img = Image.new("RGB", (512, 512), "white")
+          d = ImageDraw.Draw(img)
+
+          d.ellipse(
+              (210, 60, 302, 152),
+              outline="black",
+              width=4
+          )
+
+          d.rectangle(
+              (175, 150, 337, 365),
+              outline="black",
+              width=4
+          )
+
+          d.line(
+              (220, 190, 150, 300),
+              fill="black",
+              width=5
+          )
+
+          d.line(
+              (292, 190, 362, 300),
+              fill="black",
+              width=5
+          )
+
+          d.line(
+              (220, 365, 170, 450),
+              fill="black",
+              width=5
+          )
+
+          d.line(
+              (292, 365, 342, 450),
+              fill="black",
+              width=5
+          )
+
+          img.save(
+              "pifuhdc/images/test_person.png"
+          )
+
+          print("Test image created")
+          PY
+
+      # --------------------------------------------------
+      # Check test command
+      # --------------------------------------------------
+
+      - name: Check PIFuHDC test arguments
+        run: |
+          cd pifuhdc
+
+          python -m apps.test_colorHD --help \
+            || python apps/test_colorHD.py --help \
+            || true
+
+      # --------------------------------------------------
+      # Run color reconstruction
+      # --------------------------------------------------
+
+      - name: Run PIFuHDC
+        run: |
+          cd pifuhdc
+
+          if [ ! -f checkpoints/pifuhd.pt ]; then
+            echo "ERROR: pifuhd.pt missing"
+            exit 1
+          fi
+
+          COLOR=$(find checkpoints \
+            -type f \
+            \( -name "net_C_HD.pt" -o -name "*C_HD*.pt" \) \
+            | head -1)
+
+          if [ -z "$COLOR" ]; then
+            echo "ERROR: net_C_HD.pt was not found."
+            echo "Available checkpoints:"
+            find checkpoints -type f -printf "%p %s bytes\n"
+            exit 1
+          fi
+
+          echo "Color checkpoint:"
+          echo "$COLOR"
+
+          python -m apps.test_colorHD \
+            --input_path ./images \
+            --out_path ./results \
+            --ckpt_path ./checkpoints/pifuhd.pt \
+            --ckpt_path_Color "$COLOR"
+
+      # --------------------------------------------------
+      # Inspect output
+      # --------------------------------------------------
+
+      - name: Inspect reconstruction
+        if: always()
+        run: |
+          echo "===== PIFuHDC OUTPUT ====="
+
+          find pifuhdc/results \
+            -type f \
+            -printf "%p %s bytes\n" \
+            2>/dev/null || true
+
+      # --------------------------------------------------
+      # Model analysis
+      # --------------------------------------------------
+
+      - name: Analyze checkpoints
+        if: always()
         run: |
           python - <<'PY'
           import os
 
           root = "pifuhdc/checkpoints"
 
-          print("Checkpoint directory:")
-          for name in os.listdir(root):
-              path = os.path.join(root, name)
-              size = os.path.getsize(path)
+          print("CHECKPOINT ANALYSIS")
+          print("===================")
 
-              print(
-                  name,
-                  round(size / 1024 / 1024, 2),
-                  "MB"
-              )
+          for root_dir, dirs, files in os.walk(root):
+              for name in files:
+                  path = os.path.join(root_dir, name)
+                  size = os.path.getsize(path)
 
-          print("Checkpoint verification completed.")
-          PY
-
-      - name: Prepare input/output
-        run: |
-          mkdir -p pifuhdc/images
-          mkdir -p pifuhdc/results
-
-          cp samples/input/test_person.png pifuhdc/images/test_person.png
-
-      - name: Check PIFuHDC color test
-        run: |
-          cd pifuhdc
-
-          python -m apps.test_colorHD --help || true
-
-      - name: Run PIFuHDC color reconstruction
-        continue-on-error: true
-        run: |
-          cd pifuhdc
-
-          python -m apps.test_colorHD \
-            --input_path ./images \
-            --out_path ./results \
-            --ckpt_path ./checkpoints/pifuhd.pt \
-            --ckpt_path_Color ./checkpoints/net_C_HD.pt
-
-      - name: Collect generated files
-        if: always()
-        run: |
-          echo "===== RESULTS ====="
-
-          find pifuhdc/results \
-            -type f \
-            -printf '%p %s bytes\n' \
-            2>/dev/null || true
-
-      # ---------------------------------------------------------
-      # Quantization preparation
-      # ---------------------------------------------------------
-
-      - name: Create quantization workspace
-        run: |
-          mkdir -p models/quantized
-          mkdir -p conversion
-
-      - name: Analyze PIFuHDC checkpoints
-        run: |
-          python - <<'PY'
-          import os
-          import torch
-
-          files = [
-              "pifuhdc/checkpoints/pifuhd.pt",
-              "pifuhdc/checkpoints/net_C_HD.pt"
-          ]
-
-          for path in files:
-              print("\n==============================")
-              print(path)
-              print("==============================")
-
-              if not os.path.exists(path):
-                  print("MISSING")
-                  continue
-
-              size = os.path.getsize(path)
-
-              print(
-                  "File size:",
-                  round(size / 1024 / 1024, 2),
-                  "MB"
-              )
-
-              try:
-                  obj = torch.load(
-                      path,
-                      map_location="cpu"
-                  )
-
-                  if isinstance(obj, dict):
-                      print("Checkpoint dictionary keys:")
-                      print(list(obj.keys())[:20])
-
-                      total = 0
-
-                      def count(obj):
-                          global total
-
-                          if isinstance(obj, torch.Tensor):
-                              return obj.numel()
-
-                          if isinstance(obj, dict):
-                              return sum(
-                                  count(v)
-                                  for v in obj.values()
-                              )
-
-                          if isinstance(obj, (list, tuple)):
-                              return sum(
-                                  count(v)
-                                  for v in obj
-                              )
-
-                          return 0
-
-                      total = count(obj)
-
-                      print(
-                          "Tensor elements:",
-                          total
-                      )
-
-                      print(
-                          "Approx FP32 tensor size:",
-                          round(
-                              total * 4 / 1024 / 1024,
-                              2
-                          ),
-                          "MB"
-                      )
-
-              except Exception as e:
                   print(
-                      "Checkpoint analysis failed:",
-                      repr(e)
+                      name,
+                      "|",
+                      size,
+                      "bytes |",
+                      round(size / 1024 / 1024, 2),
+                      "MB"
                   )
           PY
 
-      # ---------------------------------------------------------
-      # FP16 conversion
-      # ---------------------------------------------------------
+      # --------------------------------------------------
+      # Upload
+      # --------------------------------------------------
 
-      - name: Convert checkpoint tensors to FP16
-        run: |
-          python - <<'PY'
-          import os
-          import torch
-
-          source_dir = "pifuhdc/checkpoints"
-          output_dir = "models/quantized"
-
-          files = [
-              "pifuhd.pt",
-              "net_C_HD.pt"
-          ]
-
-          def convert(obj):
-              if isinstance(obj, torch.Tensor):
-                  if obj.is_floating_point():
-                      return obj.half()
-                  return obj
-
-              if isinstance(obj, dict):
-                  return {
-                      k: convert(v)
-                      for k, v in obj.items()
-                  }
-
-              if isinstance(obj, list):
-                  return [convert(v) for v in obj]
-
-              if isinstance(obj, tuple):
-                  return tuple(convert(v) for v in obj)
-
-              return obj
-
-          for name in files:
-              source = os.path.join(source_dir, name)
-
-              if not os.path.exists(source):
-                  print("Skipping missing:", source)
-                  continue
-
-              print("Converting:", source)
-
-              data = torch.load(
-                  source,
-                  map_location="cpu"
-              )
-
-              converted = convert(data)
-
-              destination = os.path.join(
-                  output_dir,
-                  name.replace(".pt", "_fp16.pt")
-              )
-
-              torch.save(
-                  converted,
-                  destination
-              )
-
-              original_size = os.path.getsize(source)
-              new_size = os.path.getsize(destination)
-
-              print(
-                  "Original:",
-                  round(original_size / 1024 / 1024, 2),
-                  "MB"
-              )
-
-              print(
-                  "FP16:",
-                  round(new_size / 1024 / 1024, 2),
-                  "MB"
-              )
-
-      - name: Verify FP16 checkpoints
-        run: |
-          ls -lh models/quantized/
-
-      # ---------------------------------------------------------
-      # INT8 preparation
-      # ---------------------------------------------------------
-
-      - name: Create INT8 checkpoint experiment
-        run: |
-          python - <<'PY'
-          import os
-          import torch
-
-          source_dir = "models/quantized"
-          output_dir = "models/quantized"
-
-          files = [
-              "pifuhd_fp16.pt",
-              "net_C_HD_fp16.pt"
-          ]
-
-          def quantize_tensor(x):
-              if not x.is_floating_point():
-                  return x
-
-              # Symmetric per-tensor INT8 experiment.
-              max_value = x.abs().max()
-
-              if max_value == 0:
-                  scale = torch.tensor(
-                      1.0,
-                      dtype=torch.float32
-                  )
-              else:
-                  scale = max_value / 127.0
-
-              q = torch.clamp(
-                  torch.round(x / scale),
-                  -127,
-                  127
-              ).to(torch.int8)
-
-              return {
-                  "__int8__": True,
-                  "tensor": q,
-                  "scale": scale.float()
-              }
-
-          def quantize(obj):
-              if isinstance(obj, torch.Tensor):
-                  return quantize_tensor(obj)
-
-              if isinstance(obj, dict):
-                  return {
-                      k: quantize(v)
-                      for k, v in obj.items()
-                  }
-
-              if isinstance(obj, list):
-                  return [quantize(v) for v in obj]
-
-              if isinstance(obj, tuple):
-                  return tuple(
-                      quantize(v)
-                      for v in obj
-                  )
-
-              return obj
-
-          for name in files:
-              source = os.path.join(
-                  source_dir,
-                  name
-              )
-
-              if not os.path.exists(source):
-                  print("Skipping:", source)
-                  continue
-
-              print("Experimental INT8 conversion:", name)
-
-              data = torch.load(
-                  source,
-                  map_location="cpu"
-              )
-
-              converted = quantize(data)
-
-              destination = os.path.join(
-                  output_dir,
-                  name.replace(
-                      "_fp16.pt",
-                      "_int8_experimental.pt"
-                  )
-              )
-
-              torch.save(
-                  converted,
-                  destination
-              )
-
-              print(
-                  "Saved:",
-                  destination
-              )
-          PY
-
-      - name: Show model sizes
-        run: |
-          echo "===== MODEL SIZE COMPARISON ====="
-          find pifuhdc/checkpoints models/quantized \
-            -type f \
-            -printf '%p %s bytes\n' \
-            2>/dev/null || true
-
-      - name: Upload PIFuHDC results
+      - name: Upload PIFuHDC artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pifuhdc-step2-results
+          name: pifuhdc-baseline
           path: |
             pifuhdc/results/
             pifuhdc/checkpoints/
-            models/quantized/
           if-no-files-found: warn
           retention-days: 7
