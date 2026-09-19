@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@v4
 
       # ============================================================
-      # PYTHON 3.10
+      # PYTHON
       # ============================================================
 
       - name: Setup Python
@@ -51,9 +51,6 @@ jobs:
 
       # ============================================================
       # PYTHON DEPENDENCIES
-      #
-      # PIFuHDC is an old PyTorch project.
-      # Keep scikit-image pinned instead of installing latest.
       # ============================================================
 
       - name: Install Python dependencies
@@ -78,7 +75,7 @@ jobs:
           pip install gdown
 
       # ============================================================
-      # SHOW VERSIONS
+      # ENVIRONMENT CHECK
       # ============================================================
 
       - name: Show Python package versions
@@ -148,6 +145,7 @@ jobs:
             -O checkpoints/pifuhd.pt
 
           echo ""
+          echo "Geometry checkpoint:"
           ls -lh checkpoints/pifuhd.pt
 
       # ============================================================
@@ -166,6 +164,7 @@ jobs:
             -O checkpoints/net_C_HD.pt
 
           echo ""
+          echo "Color checkpoint:"
           ls -lh checkpoints/net_C_HD.pt
 
       # ============================================================
@@ -186,12 +185,12 @@ jobs:
           COLOR_SIZE=$(stat -c%s checkpoints/net_C_HD.pt)
 
           echo ""
-          echo "Geometry:"
+          echo "Geometry checkpoint:"
           ls -lh checkpoints/pifuhd.pt
           echo "Bytes: $GEOMETRY_SIZE"
 
           echo ""
-          echo "Color:"
+          echo "Color checkpoint:"
           ls -lh checkpoints/net_C_HD.pt
           echo "Bytes: $COLOR_SIZE"
 
@@ -201,10 +200,10 @@ jobs:
           sha256sum checkpoints/net_C_HD.pt
 
       # ============================================================
-      # OFFICIAL PIFuHDC TEST IMAGE
+      # OFFICIAL TEST IMAGE
       # ============================================================
 
-      - name: Prepare official test image
+      - name: Prepare official PIFuHDC test image
         run: |
           rm -rf teacher_input
           rm -rf teacher_output
@@ -213,7 +212,7 @@ jobs:
           mkdir -p teacher_output
 
           echo "=========================================="
-          echo "DOWNLOADING OFFICIAL TEST IMAGE"
+          echo "DOWNLOADING OFFICIAL PIFuHDC TEST IMAGE"
           echo "=========================================="
 
           wget -q --show-progress \
@@ -362,6 +361,7 @@ jobs:
           import torchvision
           import cv2
           import numpy
+          import scipy
           import PIL
           import skimage
 
@@ -369,7 +369,7 @@ jobs:
           print("PyTorch:", torch.__version__)
           print("Torchvision:", torchvision.__version__)
           print("NumPy:", numpy.__version__)
-          print("SciPy:", __import__("scipy").__version__)
+          print("SciPy:", scipy.__version__)
           print("scikit-image:", skimage.__version__)
           print("OpenCV:", cv2.__version__)
           print("Pillow:", PIL.__version__)
@@ -389,21 +389,15 @@ jobs:
       # PATCH mesh_util.py
       #
       # IMPORTANT:
-      # The previous patch modified recon.py.
-      #
-      # The actual message:
+      # Official PIFuHDC uses a bare "except:" here.
+      # It prints:
       #
       #   error cannot marching cubes
       #
-      # originates inside mesh_util.py.
+      # and returns -1.
       #
-      # This patch prints:
-      #   - SDF shape
-      #   - min/max/mean
-      #   - NaN count
-      #   - Inf count
-      #   - skimage version
-      #   - full marching-cubes traceback
+      # We replace that exact handler so the real exception,
+      # SDF statistics, and traceback are visible.
       # ============================================================
 
       - name: Patch mesh_util.py for Marching Cubes diagnostics
@@ -420,64 +414,97 @@ jobs:
           print("PATCHING mesh_util.py")
           print("==========================================")
 
-          marker = "except Exception as e:"
+          old = """    except:
+        print('error cannot marching cubes')
+        return -1"""
 
-          lines = text.splitlines()
+          new = """    except Exception as e:
+        print("")
+        print("==========================================")
+        print("MARCHING CUBES INTERNAL EXCEPTION")
+        print("==========================================")
+        print("Exception type:", type(e).__name__)
+        print("Exception message:", str(e))
+        print("")
+        print("scikit-image version:")
 
-          patched = False
+        try:
+            import skimage
+            print(skimage.__version__)
+        except Exception:
+            print("Unable to determine scikit-image version")
 
-          for i, line in enumerate(lines):
+        print("")
+        print("SDF diagnostics:")
 
-              if line.strip() != marker:
-                  continue
+        try:
+            print("SDF shape:", sdf.shape)
+            print("SDF dtype:", sdf.dtype)
+            print("SDF min:", float(np.nanmin(sdf)))
+            print("SDF max:", float(np.nanmax(sdf)))
+            print("SDF mean:", float(np.nanmean(sdf)))
+            print("SDF NaN count:", int(np.isnan(sdf).sum()))
+            print("SDF Inf count:", int(np.isinf(sdf).sum()))
+            print("SDF finite count:", int(np.isfinite(sdf).sum()))
+            print("SDF total count:", int(sdf.size))
+        except Exception as diag_error:
+            print(
+                "Could not inspect SDF:",
+                type(diag_error).__name__,
+                str(diag_error)
+            )
 
-              if i + 1 >= len(lines):
-                  continue
+        print("")
+        print("Marching Cubes threshold:", thresh)
 
-              next_line = lines[i + 1]
+        print("")
+        print("FULL TRACEBACK")
+        print("------------------------------------------")
 
-              if "print('error cannot marching cubes')" not in next_line:
-                  continue
+        import traceback
+        traceback.print_exc()
 
-              indent = line[:len(line) - len(line.lstrip())]
+        print("==========================================")
 
-              replacement = [
-                  indent + "except Exception as e:",
-                  indent + "    print('')",
-                  indent + "    print('==========================================')",
-                  indent + "    print('MARCHING CUBES INTERNAL EXCEPTION')",
-                  indent + "    print('==========================================')",
-                  indent + "    print('Exception type:', type(e).__name__)",
-                  indent + "    print('Exception message:', str(e))",
-                  indent + "    print('')",
-                  indent + "    import traceback",
-                  indent + "    traceback.print_exc()",
-                  indent + "    print('==========================================')",
-                  indent + "    raise",
-              ]
+        raise"""
 
-              lines[i:i + 2] = replacement
+          if old not in text:
+              print("")
+              print("ERROR: Exact Marching Cubes handler was not found.")
+              print("")
+              print("Searching mesh_util.py for exception handlers:")
+              print("------------------------------------------")
 
-              patched = True
+              for number, line in enumerate(
+                  text.splitlines(),
+                  1
+              ):
+                  if "except" in line:
+                      print(
+                          f"{number}: {line}"
+                      )
 
-              break
+              raise SystemExit(1)
 
-          if not patched:
-              raise SystemExit(
-                  "ERROR: Could not find the Marching Cubes exception handler in mesh_util.py"
-              )
-
-          path.write_text(
-              "\n".join(lines) + "\n"
+          text = text.replace(
+              old,
+              new,
+              1
           )
 
-          print("Marching Cubes exception patch applied.")
+          path.write_text(
+              text
+          )
+
+          print("")
+          print("Marching Cubes diagnostic patch applied successfully.")
           PY
 
       # ============================================================
-      # PATCH RECON.PY
+      # PATCH recon.py
       #
-      # Keep the previous patch as a secondary diagnostic.
+      # This is a secondary diagnostic in case another exception
+      # occurs around reconstruction/color processing.
       # ============================================================
 
       - name: Patch recon.py for full traceback
@@ -505,7 +532,9 @@ jobs:
               if "print(e)" not in lines[i + 1]:
                   continue
 
-              indent = line[:len(line) - len(line.lstrip())]
+              indent = line[
+                  :len(line) - len(line.lstrip())
+              ]
 
               replacement = [
                   indent + "except Exception as e:",
@@ -513,6 +542,8 @@ jobs:
                   indent + "    print('==========================================')",
                   indent + "    print('PIFuHDC INTERNAL EXCEPTION')",
                   indent + "    print('==========================================')",
+                  indent + "    print('Exception type:', type(e).__name__)",
+                  indent + "    print('Exception message:', str(e))",
                   indent + "    import traceback",
                   indent + "    traceback.print_exc()",
                   indent + "    print('==========================================')",
@@ -526,10 +557,14 @@ jobs:
               break
 
           if not patched:
+
               print(
-                  "WARNING: recon.py handler was not patched."
+                  "WARNING: recon.py exception handler "
+                  "was not found."
               )
+
           else:
+
               path.write_text(
                   "\n".join(lines) + "\n"
               )
@@ -552,22 +587,26 @@ jobs:
 
           echo ""
           echo "mesh_util.py:"
+          echo "------------------------------------------"
+
           grep -n \
-            -A16 \
+            -A35 \
             -B5 \
             "MARCHING CUBES INTERNAL EXCEPTION" \
             lib/mesh_util.py || true
 
           echo ""
           echo "recon.py:"
+          echo "------------------------------------------"
+
           grep -n \
-            -A12 \
-            -B4 \
+            -A15 \
+            -B5 \
             "PIFuHDC INTERNAL EXCEPTION" \
             apps/recon.py || true
 
       # ============================================================
-      # RUN REAL PIFuHDC
+      # RUN REAL PIFuHDC TEACHER
       # ============================================================
 
       - name: Run real PIFuHDC teacher
@@ -592,6 +631,7 @@ jobs:
 
           echo ""
           echo "Python environment:"
+
           python - <<'PY'
           import torch
           import skimage
@@ -623,7 +663,7 @@ jobs:
           exit 0
 
       # ============================================================
-      # OUTPUT DIAGNOSTICS
+      # COMPLETE OUTPUT DIAGNOSTICS
       # ============================================================
 
       - name: Inspect complete PIFuHDC output
@@ -697,7 +737,7 @@ jobs:
           exit 0
 
       # ============================================================
-      # COLLECT MESHES
+      # COLLECT GENERATED MESHES
       # ============================================================
 
       - name: Collect generated meshes
@@ -781,18 +821,21 @@ jobs:
             echo ""
             echo "ERROR: No 3D mesh generated."
             echo ""
-            echo "Check the inference log above for:"
+            echo "The important diagnostic section is:"
             echo ""
             echo "MARCHING CUBES INTERNAL EXCEPTION"
             echo ""
-            echo "The detailed traceback should identify"
-            echo "the exact reconstruction failure."
+            echo "Check the inference log above."
+            echo ""
 
             exit 1
           fi
 
           echo ""
           echo "Generated mesh detected."
+
+          echo ""
+          echo "Mesh files:"
 
           find teacher_output \
             \( -iname "*.obj" -o -iname "*.ply" \) \
@@ -880,6 +923,7 @@ jobs:
               import trimesh
 
           except Exception as e:
+
               print(
                   "Could not import trimesh:",
                   e
@@ -955,4 +999,4 @@ jobs:
             pifuhdc/checkpoints/net_C_HD.pt
             pifuhdc/results/
           if-no-files-found: warn
-          compression-level: 0
+          compression-level: 0a
