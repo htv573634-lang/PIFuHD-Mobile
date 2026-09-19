@@ -1,0 +1,12 @@
+name: Bootstrap PIFuHD Mobile
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Test
+        run: echo "PIFuHD Mobile workflow is working!"
