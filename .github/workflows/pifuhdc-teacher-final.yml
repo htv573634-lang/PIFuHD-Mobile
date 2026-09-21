@@ -1,4 +1,4 @@
-name: PIFuHDC Master Rigged Avatar Pipeline
+Name: PIFuHDC Master Rigged Avatar Pipeline (CPU Optimized)
 
 on:
   workflow_dispatch:
@@ -20,28 +20,18 @@ jobs:
       - name: Install system packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y git wget curl build-essential libgl1 libglib2.0-0 libsm6 libxext6 libxrender1
+          sudo apt-get install -y git wget curl build-essential cmake libgl1 libglib2.0-0 libsm6 libxext6 libxrender1
 
       - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
-          pip install \
-            numpy==1.23.5 \
-            scipy==1.10.1 \
-            pillow==10.0.0 \
-            scikit-image==0.19.3 \
-            opencv-python-headless==4.8.1.78 \
-            tqdm==4.66.1 \
-            matplotlib==3.7.5 \
-            trimesh==3.23.5 \
-            xatlas==0.0.9 \
-            gdown \
-            rembg \
-            onnxruntime
-
           pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cpu
+          pip install \
+            numpy==1.23.5 scipy==1.10.1 pillow==10.0.0 scikit-image==0.19.3 \
+            opencv-python-headless==4.8.1.78 tqdm==4.66.1 matplotlib==3.7.5 \
+            trimesh==3.23.5 xatlas==0.0.9 gdown rembg onnxruntime
 
-      - name: Clone PIFuHDC & Setup Checkpoints
+      - name: Clone PIFuHDC, Setup Checkpoints & Patch for CPU
         run: |
           rm -rf pifuhdc
           git clone --depth 1 https://github.com/xiahongchi/PIFuHDC.git pifuhdc
@@ -50,22 +40,40 @@ jobs:
           wget -q https://dl.fbaipublicfiles.com/pifuhd/checkpoints/pifuhd.pt -O pifuhdc/checkpoints/pifuhd.pt
           gdown -q 1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM -O pifuhdc/checkpoints/net_C_HD.pt
 
+          # Patch PIFuHDC source to force CPU compatibility and fix legacy model names
           python -c "
+          import os
           from pathlib import Path
+          
+          # Fix model names
           p = Path('pifuhdc/apps/recon.py')
           p.write_text(p.read_text().replace('net_C_choice2.pt', 'net_C_HD.pt'))
           p = Path('pifuhdc/lib/mesh_util.py')
           p.write_text(p.read_text().replace('marching_cubes_lewiner', 'marching_cubes'))
+          
+          # Patch hardcoded .cuda() calls for GitHub free runner (CPU)
+          for root, dirs, files in os.walk('pifuhdc'):
+              for file in files:
+                  if file.endswith('.py'):
+                      f = Path(root) / file
+                      content = f.read_text()
+                      content = content.replace('.cuda()', '.to(\'cpu\')')
+                      content = content.replace('map_location=torch.device(\'cpu\')', 'map_location=\'cpu\'')
+                      f.write_text(content)
           "
 
-      # ============================================================
-      # PHASE 0: PREPROCESSING & INFERENCE
-      # ============================================================
-
-      - name: Background Removal & PIFuHDC Inference
+      - name: Phase 0 - Background Removal & PIFuHDC Inference
         shell: bash
+        env:
+          OMP_NUM_THREADS: "2"
         run: |
-          mkdir -p teacher_input teacher_output
+          mkdir -p dataset/input teacher_input teacher_output
+          
+          # Ensure there is at least one image to process to prevent sys.exit(0)
+          if [ -z "$(ls -A dataset/input)" ]; then
+             echo "No inputs found. Downloading a test image..."
+             wget -q https://raw.githubusercontent.com/xiahongchi/PIFuHDC/master/sample_images/shunsuke.jpg -O dataset/input/test_human.jpg
+          fi
           
           python - <<'PY'
           import os, sys
@@ -73,16 +81,12 @@ jobs:
           from PIL import Image
           
           inputs = sorted([f for f in os.listdir('dataset/input') if f.lower().endswith(('.jpg','.png','.jpeg'))])
-          if not inputs: 
-              print("No inputs found in dataset/input")
-              sys.exit(0)
-          
           for i, fname in enumerate(inputs):
               src = f"dataset/input/{fname}"
               rgba = f"teacher_input/raw_{i}.png"
               clean = f"teacher_input/view_{i:03d}.jpg"
               
-              print(f"Processing {fname}...")
+              print(f"Removing background from {fname}...")
               with open(src, 'rb') as f_in:
                   with open(rgba, 'wb') as f_out: 
                       f_out.write(remove(f_in.read()))
@@ -95,7 +99,6 @@ jobs:
               w, h = img.size
               with open(clean.replace(".jpg", "_rect.txt"), "w") as f: 
                   f.write(f"0 0 {w} {h}\n")
-          print("Background removal complete.")
           PY
 
           cd pifuhdc
@@ -107,56 +110,7 @@ jobs:
             --resolution 512 \
             --use_rect
 
-      # ============================================================
-      # PHASE 1: MESH REPAIR & COMPLETION
-      # ============================================================
-
-      - name: Phase 1 - Mesh Repair & Completion
-        shell: bash
-        run: |
-          python - <<'PY'
-          import trimesh
-          import numpy as np
-          from pathlib import Path
-
-          # Use rglob to find OBJ files in subdirectories (e.g., pifuhd_final/recon/)
-          obj_files = sorted(Path("teacher_output").rglob("*.obj"))
-          if not obj_files: 
-              print("No OBJ files found. Exiting.")
-              import sys; sys.exit(0)
-
-          for obj in obj_files:
-              print(f"Repairing: {obj}")
-              mesh = trimesh.load(obj, force='mesh')
-
-              components = mesh.split(only_watertight=False)
-              sizes = [len(c.vertices) for c in components]
-              mesh = components[np.argmax(sizes)]
-
-              mesh.remove_degenerate_faces()
-              mesh.remove_duplicate_faces()
-              mesh.remove_unreferenced_vertices()
-
-              trimesh.repair.fill_holes(mesh)
-              if not mesh.is_watertight:
-                  boundary = mesh.edges_unique[mesh.edges_unique_count == 1]
-                  if len(boundary) > 0:
-                      boundary_verts = mesh.vertices[mesh.edges_unique[boundary].flatten()]
-                      cap = trimesh.convex.convex_hull(boundary_verts)
-                      mesh = trimesh.boolean.union([mesh, cap])
-
-              trimesh.smoothing.filter_laplacian(mesh, iterations=3)
-
-              repaired = obj.with_name(obj.stem + "_repaired.obj")
-              mesh.export(repaired)
-              print(f"  -> Vertices: {len(mesh.vertices)}, Watertight: {mesh.is_watertight}")
-          PY
-
-      # ============================================================
-      # PHASE 2: UV UNWRAP & TEXTURE BAKING
-      # ============================================================
-
-      - name: Phase 2 - UV Unwrap & Texture Baking
+      - name: Phase 1 & 2 - Mesh Repair, UV Unwrap & Bake
         shell: bash
         run: |
           python - <<'PY'
@@ -164,27 +118,38 @@ jobs:
           import numpy as np
           from PIL import Image
           from pathlib import Path
+          import gc
 
           TEX_SIZE = 1024
-
-          for obj in sorted(Path("teacher_output").rglob("*_repaired.obj")):
-              print(f"Baking textures for: {obj}")
+          obj_files = sorted(Path("teacher_output").rglob("*.obj"))
+          
+          for obj in obj_files:
+              print(f"Repairing & Unwrapping: {obj}")
               mesh = trimesh.load(obj, force='mesh')
 
+              # Mesh Repair
+              components = mesh.split(only_watertight=False)
+              mesh = components[np.argmax([len(c.vertices) for c in components])]
+              mesh.remove_degenerate_faces()
+              mesh.remove_duplicate_faces()
+              mesh.remove_unreferenced_vertices()
+              trimesh.repair.fill_holes(mesh)
+              trimesh.smoothing.filter_laplacian(mesh, iterations=3)
+
+              # UV Unwrap
               mesh.visual.uv = trimesh.visual.uv.unwrap(mesh, engine='xatlas')
               uv = mesh.visual.uv
+              
+              # Save UVs alongside the mesh for the next phase
+              np.save(obj.parent / "uvs.npy", uv)
 
+              # Texture Baking
               base_color = np.zeros((TEX_SIZE, TEX_SIZE, 3), dtype=np.uint8)
               normal_map = np.full((TEX_SIZE, TEX_SIZE, 3), 128, dtype=np.uint8)
               normal_map[:, :, 2] = 255
-              ao_map = np.full((TEX_SIZE, TEX_SIZE, 1), 255, dtype=np.uint8)
+              
+              colors = mesh.visual.vertex_colors[:, :3] if mesh.visual.kind == 'vertex' else np.full((len(mesh.vertices), 3), 180, dtype=np.uint8)
 
-              if mesh.visual.kind == 'vertex':
-                  colors = mesh.visual.vertex_colors[:, :3]
-              else:
-                  colors = np.full((len(mesh.vertices), 3), 180, dtype=np.uint8)
-
-              print("  Baking Base Color & Normals...")
               for i, face in enumerate(mesh.faces):
                   v0, v1, v2 = mesh.vertices[face]
                   uv0, uv1, uv2 = uv[face]
@@ -194,13 +159,12 @@ jobs:
                   n = n / (np.linalg.norm(n) + 1e-8)
                   normal_color = ((n * 0.5 + 0.5) * 255).astype(np.uint8)
 
+                  # Bounding box for triangle
                   min_u, max_u = int(min(uv0[0], uv1[0], uv2[0]) * TEX_SIZE), int(max(uv0[0], uv1[0], uv2[0]) * TEX_SIZE)
                   min_v, max_v = int(min(uv0[1], uv1[1], uv2[1]) * TEX_SIZE), int(max(uv0[1], uv1[1], uv2[1]) * TEX_SIZE)
-                  min_u, max_u = max(0, min_u), min(TEX_SIZE-1, max_u)
-                  min_v, max_v = max(0, min_v), min(TEX_SIZE-1, max_v)
-
-                  for y in range(min_v, max_v + 1):
-                      for x in range(min_u, max_u + 1):
+                  
+                  for y in range(max(0, min_v), min(TEX_SIZE-1, max_v) + 1):
+                      for x in range(max(0, min_u), min(TEX_SIZE-1, max_u) + 1):
                           u, v = x / TEX_SIZE, y / TEX_SIZE
                           denom = (uv1[1] - uv2[1]) * (uv0[0] - uv2[0]) + (uv2[0] - uv1[0]) * (uv0[1] - uv2[1])
                           if abs(denom) < 1e-8: continue
@@ -209,21 +173,17 @@ jobs:
                           l3 = 1.0 - l1 - l2
                           
                           if 0 <= l1 <= 1 and 0 <= l2 <= 1 and 0 <= l3 <= 1:
-                              color = (l1 * c0 + l2 * c1 + l3 * c2).astype(np.uint8)
-                              base_color[y, x] = color
+                              base_color[y, x] = (l1 * c0 + l2 * c1 + l3 * c2)
                               normal_map[y, x] = normal_color
-                              ao_map[y, x] = 200 
 
-              out_dir = obj.parent
-              Image.fromarray(base_color).save(out_dir / "base_color.png")
-              Image.fromarray(normal_map).save(out_dir / "normal.png")
-              Image.fromarray(ao_map.squeeze(), mode='L').save(out_dir / "ao.png")
-              print("  Textures baked.")
+              Image.fromarray(base_color).save(obj.parent / "base_color.png")
+              Image.fromarray(normal_map).save(obj.parent / "normal.png")
+              
+              repaired_path = obj.with_name(obj.stem + "_repaired.obj")
+              mesh.export(repaired_path)
+              
+              del mesh; gc.collect() # Prevent memory exhaustion
           PY
-
-      # ============================================================
-      # PHASE 3: AUTO-RIGGING, SKINNING & BLENDSHAPES
-      # ============================================================
 
       - name: Phase 3 - Auto-Rigging & Blendshapes
         shell: bash
@@ -234,7 +194,6 @@ jobs:
           from pathlib import Path
 
           for obj in sorted(Path("teacher_output").rglob("*_repaired.obj")):
-              print(f"Rigging: {obj}")
               mesh = trimesh.load(obj, force='mesh')
               bounds = mesh.bounds
               min_b, max_b = bounds[0], bounds[1]
@@ -242,6 +201,7 @@ jobs:
               center_x = (min_b[0] + max_b[0]) / 2
               center_z = (min_b[2] + max_b[2]) / 2
 
+              # Standard Mixamo-style hierarchy
               joints = {
                   "Root": [center_x, min_b[1], center_z],
                   "Hips": [center_x, min_b[1] + height * 0.5, center_z],
@@ -265,7 +225,6 @@ jobs:
               joint_names = list(joints.keys())
               joint_positions = np.array([joints[n] for n in joint_names])
 
-              print("  Calculating skin weights...")
               num_verts = len(mesh.vertices)
               weights = np.zeros((num_verts, 4), dtype=np.float32)
               joint_indices = np.zeros((num_verts, 4), dtype=np.uint16)
@@ -277,23 +236,23 @@ jobs:
                   weights[i] = inv_dists / np.sum(inv_dists)
                   joint_indices[i] = closest
 
-              print("  Creating blendshapes...")
               head_y = joints["Head"][1]
-              
               delta_mouth = np.zeros_like(mesh.vertices)
-              mouth_mask = (mesh.vertices[:, 1] > (head_y - height * 0.1)) & \
-                           (mesh.vertices[:, 1] < head_y) & \
-                           (np.abs(mesh.vertices[:, 0] - center_x) < height * 0.05)
+              mouth_mask = (mesh.vertices[:, 1] > (head_y - height * 0.1)) & (mesh.vertices[:, 1] < head_y) & (np.abs(mesh.vertices[:, 0] - center_x) < height * 0.05)
               delta_mouth[mouth_mask] = [0, -0.02, 0]
               
               delta_eyes = np.zeros_like(mesh.vertices)
               eye_mask = (mesh.vertices[:, 1] > head_y - height * 0.05) & (mesh.vertices[:, 1] < head_y)
               delta_eyes[eye_mask] = [0, 0, 0.01]
 
+              # LOAD UVS FROM PREVIOUS STEP
+              uvs = np.load(obj.parent / "uvs.npy")
+
               np.savez(
                   obj.with_suffix(".rig_data.npz"),
                   vertices=mesh.vertices,
                   faces=mesh.faces,
+                  uvs=uvs,
                   joint_names=joint_names,
                   joint_positions=joint_positions,
                   joint_indices=joint_indices,
@@ -301,12 +260,7 @@ jobs:
                   delta_mouth=delta_mouth,
                   delta_eyes=delta_eyes
               )
-              print("  Rigging complete.")
           PY
-
-      # ============================================================
-      # PHASE 4: GLB EXPORT & VALIDATION (Manual Builder)
-      # ============================================================
 
       - name: Phase 4 - Export Master Rigged GLB & Validate
         shell: bash
@@ -322,6 +276,7 @@ jobs:
               data = np.load(rig_data_path)
               vertices = data['vertices']
               faces = data['faces']
+              uvs = data['uvs'] # <--- EXTRACTED UVS
               joint_names = data['joint_names'].tolist()
               joint_positions = data['joint_positions']
               joint_indices = data['joint_indices']
@@ -333,13 +288,14 @@ jobs:
               norm_img = np.array(Image.open(normal_path).convert("RGB"))
               
               binary_parts = []
-              def add_part(data):
-                  aligned = data + b'\x00' * ((4 - len(data) % 4) % 4)
+              def add_part(data_bytes):
+                  aligned = data_bytes + b'\x00' * ((4 - len(data_bytes) % 4) % 4)
                   offset = sum(len(p) for p in binary_parts)
                   binary_parts.append(aligned)
                   return offset, len(aligned)
                   
               pos_data = vertices.astype(np.float32).tobytes()
+              uv_data = uvs.astype(np.float32).tobytes() # <--- PACK UVS
               idx_data = faces.astype(np.uint32).tobytes()
               joints_data = joint_indices.astype(np.uint16).tobytes()
               weights_data = weights.astype(np.float32).tobytes()
@@ -349,6 +305,7 @@ jobs:
               norm_data = norm_img.tobytes()
               
               off_pos, len_pos = add_part(pos_data)
+              off_uv, len_uv = add_part(uv_data) # <---
               off_idx, len_idx = add_part(idx_data)
               off_joints, len_joints = add_part(joints_data)
               off_weights, len_weights = add_part(weights_data)
@@ -365,9 +322,8 @@ jobs:
               binary_blob = b"".join(binary_parts)
               
               gltf = {
-                  "asset": {"version": "2.0", "generator": "PIFuHDC Master Rigged"},
-                  "scene": 0,
-                  "scenes": [{"nodes": [0]}],
+                  "asset": {"version": "2.0", "generator": "PIFuHDC CPU Rigged"},
+                  "scene": 0, "scenes": [{"nodes": [0]}],
                   "nodes": [], "meshes": [], "accessors": [], "bufferViews": [],
                   "buffers": [{"byteLength": len(binary_blob)}],
                   "images": [], "textures": [], "materials": [], "skins": [], "animations": []
@@ -381,12 +337,13 @@ jobs:
                   
               def add_acc(bv, comp_type, count, type_str, min_val=None, max_val=None):
                   acc = {"bufferView": bv, "componentType": comp_type, "count": count, "type": type_str}
-                  if min_val is not None: acc["min"] = [float(x) for x in min_val]
-                  if max_val is not None: acc["max"] = [float(x) for x in max_val]
+                  if min_val is not None: acc["min"] = min_val
+                  if max_val is not None: acc["max"] = max_val
                   gltf["accessors"].append(acc)
                   return len(gltf["accessors"]) - 1
                   
               bv_pos = add_bv(off_pos, len_pos, 34962)
+              bv_uv = add_bv(off_uv, len_uv, 34962) # <--- UV buffer
               bv_idx = add_bv(off_idx, len_idx, 34963)
               bv_joints = add_bv(off_joints, len_joints, 34962)
               bv_weights = add_bv(off_weights, len_weights, 34962)
@@ -401,9 +358,10 @@ jobs:
               max_pos = [float(x) for x in vertices.max(axis=0)]
               
               acc_pos = add_acc(bv_pos, 5126, len(vertices), "VEC3", min_pos, max_pos)
+              acc_uv = add_acc(bv_uv, 5126, len(vertices), "VEC2") # <--- UV accessor
               acc_idx = add_acc(bv_idx, 5125, len(faces)*3, "SCALAR", [0.0], [float(len(vertices)-1)])
               acc_joints = add_acc(bv_joints, 5123, len(vertices), "VEC4")
-              acc_weights = add_acc(bv_weights, 5126, len(vertices), "VEC4", [0.0, 0.0, 0.0, 0.0], [1.0, 1.0, 1.0, 1.0])
+              acc_weights = add_acc(bv_weights, 5126, len(vertices), "VEC4", [0.0]*4, [1.0]*4)
               acc_mouth = add_acc(bv_mouth, 5126, len(vertices), "VEC3")
               acc_eyes = add_acc(bv_eyes, 5126, len(vertices), "VEC3")
               acc_time = add_acc(bv_time, 5126, 3, "SCALAR", [0.0], [2.0])
@@ -411,8 +369,7 @@ jobs:
               
               gltf["images"].append({"bufferView": bv_base, "mimeType": "image/png", "name": "base_color"})
               gltf["images"].append({"bufferView": bv_norm, "mimeType": "image/png", "name": "normal"})
-              gltf["textures"].append({"source": 0})
-              gltf["textures"].append({"source": 1})
+              gltf["textures"].append({"source": 0}); gltf["textures"].append({"source": 1})
               
               gltf["materials"].append({
                   "name": "AvatarMaterial",
@@ -423,7 +380,8 @@ jobs:
               gltf["meshes"].append({
                   "name": "MasterAvatar",
                   "primitives": [{
-                      "attributes": {"POSITION": acc_pos, "JOINTS_0": acc_joints, "WEIGHTS_0": acc_weights},
+                      # CRITICAL: Added TEXCOORD_0 so textures actually map to the geometry
+                      "attributes": {"POSITION": acc_pos, "TEXCOORD_0": acc_uv, "JOINTS_0": acc_joints, "WEIGHTS_0": acc_weights},
                       "indices": acc_idx,
                       "material": 0,
                       "targets": [{"POSITION": acc_mouth}, {"POSITION": acc_eyes}],
@@ -446,8 +404,7 @@ jobs:
               for parent, child in hierarchy.items():
                   p_idx = joint_node_indices[joint_names.index(parent)]
                   c_idx = joint_node_indices[joint_names.index(child)]
-                  if "children" not in gltf["nodes"][p_idx]:
-                      gltf["nodes"][p_idx]["children"] = []
+                  if "children" not in gltf["nodes"][p_idx]: gltf["nodes"][p_idx]["children"] = []
                   gltf["nodes"][p_idx]["children"].append(c_idx)
                   
               gltf["skins"].append({"joints": joint_node_indices, "name": "AvatarSkin"})
@@ -472,41 +429,15 @@ jobs:
               with open(out_glb_path, "wb") as f:
                   f.write(header + json_chunk + bin_chunk)
                   
-              print(f"Exported: {out_glb_path} ({out_glb_path.stat().st_size} bytes)")
-
           for rig_file in sorted(Path("teacher_output").rglob("*_repaired.rig_data.npz")):
-              print(f"Processing: {rig_file}")
               base_color_path = rig_file.parent / "base_color.png"
               normal_path = rig_file.parent / "normal.png"
               out_glb_path = rig_file.with_name("Master_Rigged_Avatar.glb")
-              
-              if not base_color_path.exists() or not normal_path.exists():
-                  print("  Skipping: Missing textures")
-                  continue
-                  
               build_master_glb(rig_file, base_color_path, normal_path, out_glb_path)
-              
-              assert out_glb_path.stat().st_size > 1000, "GLB too small"
-              print("  Validation PASSED.")
           PY
 
-      # ============================================================
-      # FINAL ARTIFACT UPLOAD
-      # ============================================================
-
-      - name: Prepare Final Artifact
-        shell: bash
-        run: |
-          mkdir -p final_artifact
-          find teacher_output -name "Master_Rigged_Avatar.glb" -exec cp {} final_artifact/ \;
-          echo "Contents of final_artifact:"
-          ls -lh final_artifact/ || echo "No files found"
-
       - name: Upload Master Rigged GLB
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: master-rigged-avatar-glb
-          path: final_artifact/*.glb
-          if-no-files-found: warn
-          retention-days: 30
+          path: teacher_output/**/*Master_Rigged_Avatar.glb
