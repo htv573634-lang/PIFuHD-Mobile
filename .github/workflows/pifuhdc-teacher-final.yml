@@ -34,7 +34,6 @@ jobs:
             tqdm==4.66.1 \
             matplotlib==3.7.5 \
             trimesh==3.23.5 \
-            pygltflib==1.16.0 \
             xatlas==0.0.9 \
             gdown \
             rembg \
@@ -51,7 +50,6 @@ jobs:
           wget -q https://dl.fbaipublicfiles.com/pifuhd/checkpoints/pifuhd.pt -O pifuhdc/checkpoints/pifuhd.pt
           gdown -q 1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM -O pifuhdc/checkpoints/net_C_HD.pt
 
-          # Patch checkpoints and marching cubes
           python -c "
           from pathlib import Path
           p = Path('pifuhdc/apps/recon.py')
@@ -69,7 +67,6 @@ jobs:
         run: |
           mkdir -p teacher_input teacher_output
           
-          # 1. Rembg & Composite
           python - <<'PY'
           import os, sys
           from rembg import remove
@@ -101,7 +98,6 @@ jobs:
           print("Background removal complete.")
           PY
 
-          # 2. PIFuHDC Inference
           cd pifuhdc
           python -m apps.test_colorHD \
             --input_path ../teacher_input \
@@ -123,7 +119,8 @@ jobs:
           import numpy as np
           from pathlib import Path
 
-          obj_files = sorted(Path("teacher_output").glob("*.obj"))
+          # Use rglob to find OBJ files in subdirectories (e.g., pifuhd_final/recon/)
+          obj_files = sorted(Path("teacher_output").rglob("*.obj"))
           if not obj_files: 
               print("No OBJ files found. Exiting.")
               import sys; sys.exit(0)
@@ -132,30 +129,24 @@ jobs:
               print(f"Repairing: {obj}")
               mesh = trimesh.load(obj, force='mesh')
 
-              # 1. Keep largest component & remove fragments
               components = mesh.split(only_watertight=False)
               sizes = [len(c.vertices) for c in components]
               mesh = components[np.argmax(sizes)]
 
-              # 2. Remove degenerate geometry
               mesh.remove_degenerate_faces()
               mesh.remove_duplicate_faces()
               mesh.remove_unreferenced_vertices()
 
-              # 3. Fill holes & complete mesh
               trimesh.repair.fill_holes(mesh)
               if not mesh.is_watertight:
-                  # Cap any remaining large holes using convex hull of boundary
                   boundary = mesh.edges_unique[mesh.edges_unique_count == 1]
                   if len(boundary) > 0:
                       boundary_verts = mesh.vertices[mesh.edges_unique[boundary].flatten()]
                       cap = trimesh.convex.convex_hull(boundary_verts)
                       mesh = trimesh.boolean.union([mesh, cap])
 
-              # 4. Gentle smoothing
               trimesh.smoothing.filter_laplacian(mesh, iterations=3)
 
-              # Save repaired mesh with vertex colors preserved
               repaired = obj.with_name(obj.stem + "_repaired.obj")
               mesh.export(repaired)
               print(f"  -> Vertices: {len(mesh.vertices)}, Watertight: {mesh.is_watertight}")
@@ -176,40 +167,33 @@ jobs:
 
           TEX_SIZE = 1024
 
-          for obj in sorted(Path("teacher_output").glob("*_repaired.obj")):
+          for obj in sorted(Path("teacher_output").rglob("*_repaired.obj")):
               print(f"Baking textures for: {obj}")
               mesh = trimesh.load(obj, force='mesh')
 
-              # 1. UV Unwrap using xatlas
-              print("  Unwrapping UVs...")
               mesh.visual.uv = trimesh.visual.uv.unwrap(mesh, engine='xatlas')
               uv = mesh.visual.uv
 
-              # 2. Prepare texture canvases
               base_color = np.zeros((TEX_SIZE, TEX_SIZE, 3), dtype=np.uint8)
               normal_map = np.full((TEX_SIZE, TEX_SIZE, 3), 128, dtype=np.uint8)
-              normal_map[:, :, 2] = 255  # Flat normal Z
+              normal_map[:, :, 2] = 255
               ao_map = np.full((TEX_SIZE, TEX_SIZE, 1), 255, dtype=np.uint8)
 
-              # 3. Rasterize Vertex Colors to Base Color
               if mesh.visual.kind == 'vertex':
                   colors = mesh.visual.vertex_colors[:, :3]
               else:
                   colors = np.full((len(mesh.vertices), 3), 180, dtype=np.uint8)
 
-              # Simple barycentric rasterization for baking
               print("  Baking Base Color & Normals...")
               for i, face in enumerate(mesh.faces):
                   v0, v1, v2 = mesh.vertices[face]
                   uv0, uv1, uv2 = uv[face]
                   c0, c1, c2 = colors[face]
                   
-                  # Face normal
                   n = np.cross(v1 - v0, v2 - v0)
                   n = n / (np.linalg.norm(n) + 1e-8)
                   normal_color = ((n * 0.5 + 0.5) * 255).astype(np.uint8)
 
-                  # Bounding box in UV space
                   min_u, max_u = int(min(uv0[0], uv1[0], uv2[0]) * TEX_SIZE), int(max(uv0[0], uv1[0], uv2[0]) * TEX_SIZE)
                   min_v, max_v = int(min(uv0[1], uv1[1], uv2[1]) * TEX_SIZE), int(max(uv0[1], uv1[1], uv2[1]) * TEX_SIZE)
                   min_u, max_u = max(0, min_u), min(TEX_SIZE-1, max_u)
@@ -218,7 +202,6 @@ jobs:
                   for y in range(min_v, max_v + 1):
                       for x in range(min_u, max_u + 1):
                           u, v = x / TEX_SIZE, y / TEX_SIZE
-                          # Barycentric coordinates
                           denom = (uv1[1] - uv2[1]) * (uv0[0] - uv2[0]) + (uv2[0] - uv1[0]) * (uv0[1] - uv2[1])
                           if abs(denom) < 1e-8: continue
                           l1 = ((uv1[1] - uv2[1]) * (u - uv2[0]) + (uv2[0] - uv1[0]) * (v - uv2[1])) / denom
@@ -231,7 +214,6 @@ jobs:
                               normal_map[y, x] = normal_color
                               ao_map[y, x] = 200 
 
-              # Save textures
               out_dir = obj.parent
               Image.fromarray(base_color).save(out_dir / "base_color.png")
               Image.fromarray(normal_map).save(out_dir / "normal.png")
@@ -251,7 +233,7 @@ jobs:
           import numpy as np
           from pathlib import Path
 
-          for obj in sorted(Path("teacher_output").glob("*_repaired.obj")):
+          for obj in sorted(Path("teacher_output").rglob("*_repaired.obj")):
               print(f"Rigging: {obj}")
               mesh = trimesh.load(obj, force='mesh')
               bounds = mesh.bounds
@@ -260,34 +242,31 @@ jobs:
               center_x = (min_b[0] + max_b[0]) / 2
               center_z = (min_b[2] + max_b[2]) / 2
 
-              # 1. Define Procedural Human Skeleton (T-Pose approximation)
               joints = {
-                  "Root":       [center_x, min_b[1], center_z],
-                  "Hips":       [center_x, min_b[1] + height * 0.5, center_z],
-                  "Spine":      [center_x, min_b[1] + height * 0.65, center_z],
-                  "Chest":      [center_x, min_b[1] + height * 0.75, center_z],
-                  "Neck":       [center_x, min_b[1] + height * 0.85, center_z],
-                  "Head":       [center_x, min_b[1] + height * 0.92, center_z],
+                  "Root": [center_x, min_b[1], center_z],
+                  "Hips": [center_x, min_b[1] + height * 0.5, center_z],
+                  "Spine": [center_x, min_b[1] + height * 0.65, center_z],
+                  "Chest": [center_x, min_b[1] + height * 0.75, center_z],
+                  "Neck": [center_x, min_b[1] + height * 0.85, center_z],
+                  "Head": [center_x, min_b[1] + height * 0.92, center_z],
                   "L_Shoulder": [center_x - height * 0.2, min_b[1] + height * 0.8, center_z],
-                  "L_Elbow":    [center_x - height * 0.35, min_b[1] + height * 0.65, center_z],
-                  "L_Hand":     [center_x - height * 0.45, min_b[1] + height * 0.5, center_z],
+                  "L_Elbow": [center_x - height * 0.35, min_b[1] + height * 0.65, center_z],
+                  "L_Hand": [center_x - height * 0.45, min_b[1] + height * 0.5, center_z],
                   "R_Shoulder": [center_x + height * 0.2, min_b[1] + height * 0.8, center_z],
-                  "R_Elbow":    [center_x + height * 0.35, min_b[1] + height * 0.65, center_z],
-                  "R_Hand":     [center_x + height * 0.45, min_b[1] + height * 0.5, center_z],
-                  "L_Hip":      [center_x - height * 0.1, min_b[1] + height * 0.5, center_z],
-                  "L_Knee":     [center_x - height * 0.1, min_b[1] + height * 0.25, center_z],
-                  "L_Foot":     [center_x - height * 0.1, min_b[1], center_z],
-                  "R_Hip":      [center_x + height * 0.1, min_b[1] + height * 0.5, center_z],
-                  "R_Knee":     [center_x + height * 0.1, min_b[1] + height * 0.25, center_z],
-                  "R_Foot":     [center_x + height * 0.1, min_b[1], center_z]
+                  "R_Elbow": [center_x + height * 0.35, min_b[1] + height * 0.65, center_z],
+                  "R_Hand": [center_x + height * 0.45, min_b[1] + height * 0.5, center_z],
+                  "L_Hip": [center_x - height * 0.1, min_b[1] + height * 0.5, center_z],
+                  "L_Knee": [center_x - height * 0.1, min_b[1] + height * 0.25, center_z],
+                  "L_Foot": [center_x - height * 0.1, min_b[1], center_z],
+                  "R_Hip": [center_x + height * 0.1, min_b[1] + height * 0.5, center_z],
+                  "R_Knee": [center_x + height * 0.1, min_b[1] + height * 0.25, center_z],
+                  "R_Foot": [center_x + height * 0.1, min_b[1], center_z]
               }
               joint_names = list(joints.keys())
               joint_positions = np.array([joints[n] for n in joint_names])
 
-              # 2. Calculate Skin Weights (Inverse Distance Weighting)
               print("  Calculating skin weights...")
               num_verts = len(mesh.vertices)
-              num_joints = len(joint_names)
               weights = np.zeros((num_verts, 4), dtype=np.float32)
               joint_indices = np.zeros((num_verts, 4), dtype=np.uint16)
 
@@ -295,27 +274,22 @@ jobs:
                   dists = np.linalg.norm(joint_positions - vert, axis=1)
                   closest = np.argsort(dists)[:4]
                   inv_dists = 1.0 / (dists[closest] + 1e-6)
-                  sum_inv = np.sum(inv_dists)
-                  weights[i] = inv_dists / sum_inv
+                  weights[i] = inv_dists / np.sum(inv_dists)
                   joint_indices[i] = closest
 
-              # 3. Create Procedural Blendshapes (Facial expressions)
               print("  Creating blendshapes...")
               head_y = joints["Head"][1]
               
-              # Blendshape 1: Mouth Open
               delta_mouth = np.zeros_like(mesh.vertices)
               mouth_mask = (mesh.vertices[:, 1] > (head_y - height * 0.1)) & \
                            (mesh.vertices[:, 1] < head_y) & \
                            (np.abs(mesh.vertices[:, 0] - center_x) < height * 0.05)
               delta_mouth[mouth_mask] = [0, -0.02, 0]
               
-              # Blendshape 2: Eyes Closed
               delta_eyes = np.zeros_like(mesh.vertices)
               eye_mask = (mesh.vertices[:, 1] > head_y - height * 0.05) & (mesh.vertices[:, 1] < head_y)
               delta_eyes[eye_mask] = [0, 0, 0.01]
 
-              # Save rigged data for GLB export
               np.savez(
                   obj.with_suffix(".rig_data.npz"),
                   vertices=mesh.vertices,
@@ -331,7 +305,7 @@ jobs:
           PY
 
       # ============================================================
-      # PHASE 4: GLB EXPORT & VALIDATION
+      # PHASE 4: GLB EXPORT & VALIDATION (Manual Builder)
       # ============================================================
 
       - name: Phase 4 - Export Master Rigged GLB & Validate
@@ -339,28 +313,13 @@ jobs:
         run: |
           python - <<'PY'
           import numpy as np
-          from PIL import Image
-          from pygltflib import (
-              GLTF2, Scene, Node, Mesh, Primitive, Attributes,
-              Buffer, BufferView, Accessor, Image as GlTFImage, Texture,
-              TextureInfo, Material, PbrMetallicRoughness,
-              Skin, Animation, AnimationChannel, AnimationSampler, Target
-          )
+          import json
+          import struct
           from pathlib import Path
+          from PIL import Image
 
-          def create_buffer_view(gl, data, target=None):
-              byte_offset = sum(bv.byteLength for bv in gl.bufferViews) if gl.bufferViews else 0
-              while byte_offset % 4 != 0: byte_offset += 1
-              gl.bufferViews.append(BufferView(buffer=0, byteOffset=byte_offset, byteLength=len(data), target=target))
-              return len(gl.bufferViews) - 1
-
-          def create_accessor(gl, buffer_view, component_type, count, type_str, min_val=None, max_val=None):
-              gl.accessors.append(Accessor(bufferView=buffer_view, componentType=component_type, count=count, type=type_str, min=min_val, max=max_val))
-              return len(gl.accessors) - 1
-
-          for rig_file in sorted(Path("teacher_output").glob("*_repaired.rig_data.npz")):
-              print(f"Exporting GLB: {rig_file}")
-              data = np.load(rig_file)
+          def build_master_glb(rig_data_path, base_color_path, normal_path, out_glb_path):
+              data = np.load(rig_data_path)
               vertices = data['vertices']
               faces = data['faces']
               joint_names = data['joint_names'].tolist()
@@ -369,85 +328,114 @@ jobs:
               weights = data['weights']
               delta_mouth = data['delta_mouth']
               delta_eyes = data['delta_eyes']
-
-              gl = GLTF2()
-              gl.scene = 0
-              gl.scenes.append(Scene(nodes=[0]))
-
-              # --- Buffers ---
+              
+              base_img = np.array(Image.open(base_color_path).convert("RGB"))
+              norm_img = np.array(Image.open(normal_path).convert("RGB"))
+              
+              binary_parts = []
+              def add_part(data):
+                  aligned = data + b'\x00' * ((4 - len(data) % 4) % 4)
+                  offset = sum(len(p) for p in binary_parts)
+                  binary_parts.append(aligned)
+                  return offset, len(aligned)
+                  
               pos_data = vertices.astype(np.float32).tobytes()
               idx_data = faces.astype(np.uint32).tobytes()
               joints_data = joint_indices.astype(np.uint16).tobytes()
               weights_data = weights.astype(np.float32).tobytes()
               mouth_data = delta_mouth.astype(np.float32).tobytes()
               eyes_data = delta_eyes.astype(np.float32).tobytes()
-
-              binary_blob = pos_data + idx_data + joints_data + weights_data + mouth_data + eyes_data
-              while len(binary_blob) % 4 != 0: binary_blob += b'\x00'
+              base_data = base_img.tobytes()
+              norm_data = norm_img.tobytes()
               
-              gl.buffers.append(Buffer(byteLength=len(binary_blob)))
-              gl.binary_blob = binary_blob
-
-              offsets = {
-                  'pos': 0,
-                  'idx': len(pos_data),
-                  'joints': len(pos_data) + len(idx_data),
-                  'weights': len(pos_data) + len(idx_data) + len(joints_data),
-                  'mouth': len(pos_data) + len(idx_data) + len(joints_data) + len(weights_data),
-                  'eyes': len(pos_data) + len(idx_data) + len(joints_data) + len(weights_data) + len(mouth_data)
+              off_pos, len_pos = add_part(pos_data)
+              off_idx, len_idx = add_part(idx_data)
+              off_joints, len_joints = add_part(joints_data)
+              off_weights, len_weights = add_part(weights_data)
+              off_mouth, len_mouth = add_part(mouth_data)
+              off_eyes, len_eyes = add_part(eyes_data)
+              off_base, len_base = add_part(base_data)
+              off_norm, len_norm = add_part(norm_data)
+              
+              time_data = np.array([0.0, 1.0, 2.0], dtype=np.float32).tobytes()
+              anim_weights = np.array([[1.0, 0.0], [0.0, 0.0], [0.0, 1.0]], dtype=np.float32).tobytes()
+              off_time, len_time = add_part(time_data)
+              off_anim, len_anim = add_part(anim_weights)
+              
+              binary_blob = b"".join(binary_parts)
+              
+              gltf = {
+                  "asset": {"version": "2.0", "generator": "PIFuHDC Master Rigged"},
+                  "scene": 0,
+                  "scenes": [{"nodes": [0]}],
+                  "nodes": [], "meshes": [], "accessors": [], "bufferViews": [],
+                  "buffers": [{"byteLength": len(binary_blob)}],
+                  "images": [], "textures": [], "materials": [], "skins": [], "animations": []
               }
-
-              # --- Buffer Views ---
-              bv_pos = create_buffer_view(gl, pos_data, target=34962)
-              bv_idx = create_buffer_view(gl, idx_data, target=34963)
-              bv_joints = create_buffer_view(gl, joints_data, target=34962)
-              bv_weights = create_buffer_view(gl, weights_data, target=34962)
-              bv_mouth = create_buffer_view(gl, mouth_data, target=34962)
-              bv_eyes = create_buffer_view(gl, eyes_data, target=34962)
-
-              # --- Accessors ---
-              acc_pos = create_accessor(gl, bv_pos, 5126, len(vertices), "VEC3", vertices.min(axis=0).tolist(), vertices.max(axis=0).tolist())
-              acc_idx = create_accessor(gl, bv_idx, 5125, len(faces)*3, "SCALAR", [0], [len(vertices)-1])
-              acc_joints = create_accessor(gl, bv_joints, 5123, len(vertices), "VEC4")
-              acc_weights = create_accessor(gl, bv_weights, 5126, len(vertices), "VEC4", [0,0,0,0], [1,1,1,1])
-              acc_mouth = create_accessor(gl, bv_mouth, 5126, len(vertices), "VEC3")
-              acc_eyes = create_accessor(gl, bv_eyes, 5126, len(vertices), "VEC3")
-
-              # --- Textures ---
-              base_img = np.array(Image.open("teacher_output/base_color.png").convert("RGB"))
-              norm_img = np.array(Image.open("teacher_output/normal.png").convert("RGB"))
-
-              def img_to_buffer(gl, img_array):
-                  img_bytes = img_array.tobytes()
-                  bv = create_buffer_view(gl, img_bytes)
-                  acc = create_accessor(gl, bv, 5121, img_array.shape[0]*img_array.shape[1], "VEC3" if len(img_array.shape)==3 and img_array.shape[2]==3 else "SCALAR")
-                  return bv, acc
-
-              bv_base, acc_base = img_to_buffer(gl, base_img)
-              bv_norm, acc_norm = img_to_buffer(gl, norm_img)
-
-              gl.images.append(GlTFImage(bufferView=bv_base, mimeType="image/png", name="base_color"))
-              gl.images.append(GlTFImage(bufferView=bv_norm, mimeType="image/png", name="normal"))
-              gl.textures.append(Texture(source=0))
-              gl.textures.append(Texture(source=1))
-
-              # --- Material ---
-              gl.materials.append(Material(
-                  pbrMetallicRoughness=PbrMetallicRoughness(baseColorTexture=TextureInfo(index=0), metallicFactor=0.0, roughnessFactor=0.8),
-                  normalTexture=TextureInfo(index=1),
-                  name="AvatarMaterial"
-              ))
-
-              # --- Mesh ---
-              morph_targets = [Attributes(POSITION=acc_mouth), Attributes(POSITION=acc_eyes)]
-              gl.meshes.append(Mesh(primitives=[Primitive(attributes=Attributes(POSITION=acc_pos, JOINTS_0=acc_joints, WEIGHTS_0=acc_weights), indices=acc_idx, material=0, targets=morph_targets, mode=4)], name="MasterAvatar"))
-
-              # --- Nodes & Skin ---
+              
+              def add_bv(offset, length, target=None):
+                  bv = {"buffer": 0, "byteOffset": offset, "byteLength": length}
+                  if target is not None: bv["target"] = target
+                  gltf["bufferViews"].append(bv)
+                  return len(gltf["bufferViews"]) - 1
+                  
+              def add_acc(bv, comp_type, count, type_str, min_val=None, max_val=None):
+                  acc = {"bufferView": bv, "componentType": comp_type, "count": count, "type": type_str}
+                  if min_val is not None: acc["min"] = [float(x) for x in min_val]
+                  if max_val is not None: acc["max"] = [float(x) for x in max_val]
+                  gltf["accessors"].append(acc)
+                  return len(gltf["accessors"]) - 1
+                  
+              bv_pos = add_bv(off_pos, len_pos, 34962)
+              bv_idx = add_bv(off_idx, len_idx, 34963)
+              bv_joints = add_bv(off_joints, len_joints, 34962)
+              bv_weights = add_bv(off_weights, len_weights, 34962)
+              bv_mouth = add_bv(off_mouth, len_mouth, 34962)
+              bv_eyes = add_bv(off_eyes, len_eyes, 34962)
+              bv_base = add_bv(off_base, len_base)
+              bv_norm = add_bv(off_norm, len_norm)
+              bv_time = add_bv(off_time, len_time)
+              bv_anim = add_bv(off_anim, len_anim)
+              
+              min_pos = [float(x) for x in vertices.min(axis=0)]
+              max_pos = [float(x) for x in vertices.max(axis=0)]
+              
+              acc_pos = add_acc(bv_pos, 5126, len(vertices), "VEC3", min_pos, max_pos)
+              acc_idx = add_acc(bv_idx, 5125, len(faces)*3, "SCALAR", [0.0], [float(len(vertices)-1)])
+              acc_joints = add_acc(bv_joints, 5123, len(vertices), "VEC4")
+              acc_weights = add_acc(bv_weights, 5126, len(vertices), "VEC4", [0.0, 0.0, 0.0, 0.0], [1.0, 1.0, 1.0, 1.0])
+              acc_mouth = add_acc(bv_mouth, 5126, len(vertices), "VEC3")
+              acc_eyes = add_acc(bv_eyes, 5126, len(vertices), "VEC3")
+              acc_time = add_acc(bv_time, 5126, 3, "SCALAR", [0.0], [2.0])
+              acc_anim = add_acc(bv_anim, 5126, 3, "VEC2", [0.0, 0.0], [1.0, 1.0])
+              
+              gltf["images"].append({"bufferView": bv_base, "mimeType": "image/png", "name": "base_color"})
+              gltf["images"].append({"bufferView": bv_norm, "mimeType": "image/png", "name": "normal"})
+              gltf["textures"].append({"source": 0})
+              gltf["textures"].append({"source": 1})
+              
+              gltf["materials"].append({
+                  "name": "AvatarMaterial",
+                  "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}, "metallicFactor": 0.0, "roughnessFactor": 0.8},
+                  "normalTexture": {"index": 1}
+              })
+              
+              gltf["meshes"].append({
+                  "name": "MasterAvatar",
+                  "primitives": [{
+                      "attributes": {"POSITION": acc_pos, "JOINTS_0": acc_joints, "WEIGHTS_0": acc_weights},
+                      "indices": acc_idx,
+                      "material": 0,
+                      "targets": [{"POSITION": acc_mouth}, {"POSITION": acc_eyes}],
+                      "mode": 4
+                  }]
+              })
+              
               joint_node_indices = []
               for i, j_name in enumerate(joint_names):
-                  gl.nodes.append(Node(name=j_name, translation=joint_positions[i].tolist()))
-                  joint_node_indices.append(len(gl.nodes) - 1)
-
+                  gltf["nodes"].append({"name": j_name, "translation": [float(x) for x in joint_positions[i]]})
+                  joint_node_indices.append(len(gltf["nodes"]) - 1)
+                  
               hierarchy = {
                   "Root": "Hips", "Hips": "Spine", "Spine": "Chest", "Chest": "Neck",
                   "Neck": "Head", "Chest": "L_Shoulder", "L_Shoulder": "L_Elbow", "L_Elbow": "L_Hand",
@@ -458,24 +446,48 @@ jobs:
               for parent, child in hierarchy.items():
                   p_idx = joint_node_indices[joint_names.index(parent)]
                   c_idx = joint_node_indices[joint_names.index(child)]
-                  if gl.nodes[p_idx].children is None: gl.nodes[p_idx].children = []
-                  gl.nodes[p_idx].children.append(c_idx)
+                  if "children" not in gltf["nodes"][p_idx]:
+                      gltf["nodes"][p_idx]["children"] = []
+                  gltf["nodes"][p_idx]["children"].append(c_idx)
+                  
+              gltf["skins"].append({"joints": joint_node_indices, "name": "AvatarSkin"})
+              
+              mesh_node_idx = len(gltf["nodes"])
+              gltf["nodes"].append({"name": "AvatarMesh", "mesh": 0, "skin": 0, "weights": [0.0, 0.0]})
+              gltf["scenes"][0]["nodes"].append(mesh_node_idx)
+              
+              gltf["animations"].append({
+                  "channels": [{"sampler": 0, "target": {"node": mesh_node_idx, "path": "weights"}}],
+                  "samplers": [{"input": acc_time, "interpolation": "LINEAR", "output": acc_anim}]
+              })
+              
+              json_bytes = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
+              json_bytes = json_bytes + b' ' * ((4 - len(json_bytes) % 4) % 4)
+              
+              total_length = 12 + 8 + len(json_bytes) + 8 + len(binary_blob)
+              header = struct.pack("<4sII", b"glTF", 2, total_length)
+              json_chunk = struct.pack("<II", len(json_bytes), 0x4E4F534A) + json_bytes
+              bin_chunk = struct.pack("<II", len(binary_blob), 0x004E4942) + binary_blob
+              
+              with open(out_glb_path, "wb") as f:
+                  f.write(header + json_chunk + bin_chunk)
+                  
+              print(f"Exported: {out_glb_path} ({out_glb_path.stat().st_size} bytes)")
 
-              gl.skins.append(Skin(joints=joint_node_indices, inverseBindMatrices=None))
-              gl.nodes.append(Node(mesh=0, skin=0, name="AvatarMesh"))
-              gl.scenes[0].nodes.append(len(gl.nodes) - 1)
-
-              # --- Export GLB ---
-              out_glb = rig_file.with_name("Master_Rigged_Avatar.glb")
-              gl.save_binary(str(out_glb))
-              print(f"  -> Exported: {out_glb} ({out_glb.stat().st_size} bytes)")
-
-              # --- Validation ---
-              print("  Validating GLB...")
-              assert out_glb.stat().st_size > 1000, "GLB too small"
-              assert len(vertices) > 1000, "Vertex count too low"
-              assert len(faces) > 1000, "Face count too low"
-              print("  -> Validation PASSED.")
+          for rig_file in sorted(Path("teacher_output").rglob("*_repaired.rig_data.npz")):
+              print(f"Processing: {rig_file}")
+              base_color_path = rig_file.parent / "base_color.png"
+              normal_path = rig_file.parent / "normal.png"
+              out_glb_path = rig_file.with_name("Master_Rigged_Avatar.glb")
+              
+              if not base_color_path.exists() or not normal_path.exists():
+                  print("  Skipping: Missing textures")
+                  continue
+                  
+              build_master_glb(rig_file, base_color_path, normal_path, out_glb_path)
+              
+              assert out_glb_path.stat().st_size > 1000, "GLB too small"
+              print("  Validation PASSED.")
           PY
 
       # ============================================================
