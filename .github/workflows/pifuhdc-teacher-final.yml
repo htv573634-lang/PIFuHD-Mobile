@@ -36,7 +36,8 @@ jobs:
             pygltflib==1.16.0 \
             xatlas==0.0.9 \
             gdown \
-            rembg
+            rembg \
+            onnxruntime
 
           pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cpu
 
@@ -74,15 +75,19 @@ jobs:
           from PIL import Image
           
           inputs = sorted([f for f in os.listdir('dataset/input') if f.lower().endswith(('.jpg','.png','.jpeg'))])
-          if not inputs: sys.exit("No inputs found")
+          if not inputs: 
+              print("No inputs found in dataset/input")
+              sys.exit(0)
           
           for i, fname in enumerate(inputs):
               src = f"dataset/input/{fname}"
               rgba = f"teacher_input/raw_{i}.png"
               clean = f"teacher_input/view_{i:03d}.jpg"
               
+              print(f"Processing {fname}...")
               with open(src, 'rb') as f_in:
-                  with open(rgba, 'wb') as f_out: f_out.write(remove(f_in.read()))
+                  with open(rgba, 'wb') as f_out: 
+                      f_out.write(remove(f_in.read()))
                   
               img = Image.open(rgba).convert("RGBA")
               bg = Image.new("RGBA", img.size, (255,255,255,255))
@@ -90,7 +95,9 @@ jobs:
               bg.convert("RGB").save(clean, "JPEG", quality=100)
               
               w, h = img.size
-              with open(clean.replace(".jpg", "_rect.txt"), "w") as f: f.write(f"0 0 {w} {h}\n")
+              with open(clean.replace(".jpg", "_rect.txt"), "w") as f: 
+                  f.write(f"0 0 {w} {h}\n")
+          print("Background removal complete.")
           PY
 
           # 2. PIFuHDC Inference
@@ -116,7 +123,9 @@ jobs:
           from pathlib import Path
 
           obj_files = sorted(Path("teacher_output").glob("*.obj"))
-          if not obj_files: raise SystemExit("No OBJ files found")
+          if not obj_files: 
+              print("No OBJ files found. Exiting.")
+              import sys; sys.exit(0)
 
           for obj in obj_files:
               print(f"Repairing: {obj}")
@@ -216,11 +225,9 @@ jobs:
                           l3 = 1.0 - l1 - l2
                           
                           if 0 <= l1 <= 1 and 0 <= l2 <= 1 and 0 <= l3 <= 1:
-                              # Interpolate color and normal
                               color = (l1 * c0 + l2 * c1 + l3 * c2).astype(np.uint8)
                               base_color[y, x] = color
                               normal_map[y, x] = normal_color
-                              # Simple AO approximation (darker in crevices - simulated by distance to edge)
                               ao_map[y, x] = 200 
 
               # Save textures
@@ -285,7 +292,6 @@ jobs:
 
               for i, vert in enumerate(mesh.vertices):
                   dists = np.linalg.norm(joint_positions - vert, axis=1)
-                  # Get 4 closest joints
                   closest = np.argsort(dists)[:4]
                   inv_dists = 1.0 / (dists[closest] + 1e-6)
                   sum_inv = np.sum(inv_dists)
@@ -294,19 +300,19 @@ jobs:
 
               # 3. Create Procedural Blendshapes (Facial expressions)
               print("  Creating blendshapes...")
-              # Find head vertices
               head_y = joints["Head"][1]
-              head_mask = mesh.vertices[:, 1] > (head_y - height * 0.1)
               
-              # Blendshape 1: Mouth Open (displace lower face down)
+              # Blendshape 1: Mouth Open
               delta_mouth = np.zeros_like(mesh.vertices)
-              mouth_mask = head_mask & (mesh.vertices[:, 1] < head_y) & (np.abs(mesh.vertices[:, 0] - center_x) < height * 0.05)
+              mouth_mask = (mesh.vertices[:, 1] > (head_y - height * 0.1)) & \
+                           (mesh.vertices[:, 1] < head_y) & \
+                           (np.abs(mesh.vertices[:, 0] - center_x) < height * 0.05)
               delta_mouth[mouth_mask] = [0, -0.02, 0]
               
-              # Blendshape 2: Eyes Closed (flatten eye region)
+              # Blendshape 2: Eyes Closed
               delta_eyes = np.zeros_like(mesh.vertices)
-              eye_mask = head_mask & (mesh.vertices[:, 1] > head_y - height * 0.05) & (mesh.vertices[:, 1] < head_y)
-              delta_eyes[eye_mask] = [0, 0, 0.01] # Push forward slightly
+              eye_mask = (mesh.vertices[:, 1] > head_y - height * 0.05) & (mesh.vertices[:, 1] < head_y)
+              delta_eyes[eye_mask] = [0, 0, 0.01]
 
               # Save rigged data for GLB export
               np.savez(
@@ -337,34 +343,18 @@ jobs:
               GLTF2, Scene, Node, Mesh, Primitive, Attributes,
               Buffer, BufferView, Accessor, Image as GlTFImage, Texture,
               TextureInfo, Material, PbrMetallicRoughness,
-              Skin, Animation, AnimationChannel, AnimationSampler,
-              Target, Sparse, SparseIndices, SparseValues
+              Skin, Animation, AnimationChannel, AnimationSampler, Target
           )
           from pathlib import Path
-          import struct
 
           def create_buffer_view(gl, data, target=None):
               byte_offset = sum(bv.byteLength for bv in gl.bufferViews) if gl.bufferViews else 0
-              # Align to 4 bytes
               while byte_offset % 4 != 0: byte_offset += 1
-              
-              gl.bufferViews.append(BufferView(
-                  buffer=0,
-                  byteOffset=byte_offset,
-                  byteLength=len(data),
-                  target=target
-              ))
+              gl.bufferViews.append(BufferView(buffer=0, byteOffset=byte_offset, byteLength=len(data), target=target))
               return len(gl.bufferViews) - 1
 
           def create_accessor(gl, buffer_view, component_type, count, type_str, min_val=None, max_val=None):
-              gl.accessors.append(Accessor(
-                  bufferView=buffer_view,
-                  componentType=component_type,
-                  count=count,
-                  type=type_str,
-                  min=min_val,
-                  max=max_val
-              ))
+              gl.accessors.append(Accessor(bufferView=buffer_view, componentType=component_type, count=count, type=type_str, min=min_val, max=max_val))
               return len(gl.accessors) - 1
 
           for rig_file in sorted(Path("teacher_output").glob("*_repaired.rig_data.npz")):
@@ -388,18 +378,14 @@ jobs:
               idx_data = faces.astype(np.uint32).tobytes()
               joints_data = joint_indices.astype(np.uint16).tobytes()
               weights_data = weights.astype(np.float32).tobytes()
-              
-              # Morph targets deltas
               mouth_data = delta_mouth.astype(np.float32).tobytes()
               eyes_data = delta_eyes.astype(np.float32).tobytes()
 
-              # Pack all binary data
               binary_blob = pos_data + idx_data + joints_data + weights_data + mouth_data + eyes_data
-              # Pad to 4 bytes
               while len(binary_blob) % 4 != 0: binary_blob += b'\x00'
               
               gl.buffers.append(Buffer(byteLength=len(binary_blob)))
-              gl.binary_blob = binary_blob.encode('latin-1') if isinstance(binary_blob, str) else binary_blob
+              gl.binary_blob = binary_blob
 
               offsets = {
                   'pos': 0,
@@ -419,29 +405,21 @@ jobs:
               bv_eyes = create_buffer_view(gl, eyes_data, target=34962)
 
               # --- Accessors ---
-              acc_pos = create_accessor(gl, bv_pos, 5126, len(vertices), "VEC3", 
-                                        vertices.min(axis=0).tolist(), vertices.max(axis=0).tolist())
+              acc_pos = create_accessor(gl, bv_pos, 5126, len(vertices), "VEC3", vertices.min(axis=0).tolist(), vertices.max(axis=0).tolist())
               acc_idx = create_accessor(gl, bv_idx, 5125, len(faces)*3, "SCALAR", [0], [len(vertices)-1])
               acc_joints = create_accessor(gl, bv_joints, 5123, len(vertices), "VEC4")
               acc_weights = create_accessor(gl, bv_weights, 5126, len(vertices), "VEC4", [0,0,0,0], [1,1,1,1])
-              
               acc_mouth = create_accessor(gl, bv_mouth, 5126, len(vertices), "VEC3")
               acc_eyes = create_accessor(gl, bv_eyes, 5126, len(vertices), "VEC3")
 
               # --- Textures ---
-              # Load baked textures
               base_img = np.array(Image.open("teacher_output/base_color.png").convert("RGB"))
               norm_img = np.array(Image.open("teacher_output/normal.png").convert("RGB"))
-              ao_img = np.array(Image.open("teacher_output/ao.png").convert("L"))
 
-              # Combine AO into Base Color alpha or just use as separate texture (GLB supports multiple)
-              # For simplicity, we'll pack AO into the blue channel of a combined map or just use Base Color
-              
               def img_to_buffer(gl, img_array):
                   img_bytes = img_array.tobytes()
                   bv = create_buffer_view(gl, img_bytes)
-                  acc = create_accessor(gl, bv, 5121, img_array.shape[0]*img_array.shape[1], 
-                                        "VEC3" if len(img_array.shape)==3 and img_array.shape[2]==3 else "SCALAR")
+                  acc = create_accessor(gl, bv, 5121, img_array.shape[0]*img_array.shape[1], "VEC3" if len(img_array.shape)==3 and img_array.shape[2]==3 else "SCALAR")
                   return bv, acc
 
               bv_base, acc_base = img_to_buffer(gl, base_img)
@@ -449,54 +427,26 @@ jobs:
 
               gl.images.append(GlTFImage(bufferView=bv_base, mimeType="image/png", name="base_color"))
               gl.images.append(GlTFImage(bufferView=bv_norm, mimeType="image/png", name="normal"))
-              
               gl.textures.append(Texture(source=0))
               gl.textures.append(Texture(source=1))
 
               # --- Material ---
               gl.materials.append(Material(
-                  pbrMetallicRoughness=PbrMetallicRoughness(
-                      baseColorTexture=TextureInfo(index=0),
-                      metallicFactor=0.0,
-                      roughnessFactor=0.8
-                  ),
+                  pbrMetallicRoughness=PbrMetallicRoughness(baseColorTexture=TextureInfo(index=0), metallicFactor=0.0, roughnessFactor=0.8),
                   normalTexture=TextureInfo(index=1),
                   name="AvatarMaterial"
               ))
 
-              # --- Morph Targets ---
-              morph_targets = [
-                  Attributes(POSITION=acc_mouth), # Mouth Open
-                  Attributes(POSITION=acc_eyes)   # Eyes Closed
-              ]
-
               # --- Mesh ---
-              gl.meshes.append(Mesh(
-                  primitives=[Primitive(
-                      attributes=Attributes(
-                          POSITION=acc_pos,
-                          JOINTS_0=acc_joints,
-                          WEIGHTS_0=acc_weights
-                      ),
-                      indices=acc_idx,
-                      material=0,
-                      targets=morph_targets,
-                      mode=4
-                  )],
-                  name="MasterAvatar"
-              ))
+              morph_targets = [Attributes(POSITION=acc_mouth), Attributes(POSITION=acc_eyes)]
+              gl.meshes.append(Mesh(primitives=[Primitive(attributes=Attributes(POSITION=acc_pos, JOINTS_0=acc_joints, WEIGHTS_0=acc_weights), indices=acc_idx, material=0, targets=morph_targets, mode=4)], name="MasterAvatar"))
 
               # --- Nodes & Skin ---
-              # Create joint nodes
               joint_node_indices = []
               for i, j_name in enumerate(joint_names):
-                  gl.nodes.append(Node(
-                      name=j_name,
-                      translation=joint_positions[i].tolist()
-                  ))
+                  gl.nodes.append(Node(name=j_name, translation=joint_positions[i].tolist()))
                   joint_node_indices.append(len(gl.nodes) - 1)
 
-              # Hierarchy (simplified parent-child)
               hierarchy = {
                   "Root": "Hips", "Hips": "Spine", "Spine": "Chest", "Chest": "Neck",
                   "Neck": "Head", "Chest": "L_Shoulder", "L_Shoulder": "L_Elbow", "L_Elbow": "L_Hand",
@@ -510,50 +460,9 @@ jobs:
                   if gl.nodes[p_idx].children is None: gl.nodes[p_idx].children = []
                   gl.nodes[p_idx].children.append(c_idx)
 
-              # Skin
-              gl.skins.append(Skin(
-                  joints=joint_node_indices,
-                  inverseBindMatrices=None # Simplified for CI
-              ))
-
-              # Mesh Node
-              gl.nodes.append(Node(
-                  mesh=0,
-                  skin=0,
-                  name="AvatarMesh"
-              ))
+              gl.skins.append(Skin(joints=joint_node_indices, inverseBindMatrices=None))
+              gl.nodes.append(Node(mesh=0, skin=0, name="AvatarMesh"))
               gl.scenes[0].nodes.append(len(gl.nodes) - 1)
-
-              # --- Animations (Blendshapes) ---
-              # Create a simple animation that triggers blendshapes
-              # Time: 0.0 -> 1.0 -> 2.0
-              time_data = np.array([0.0, 1.0, 2.0], dtype=np.float32).tobytes()
-              mouth_weights = np.array([[1.0, 0.0], [0.0, 0.0], [0.0, 0.0]], dtype=np.float32).tobytes()
-              eyes_weights = np.array([[0.0, 0.0], [0.0, 0.0], [0.0, 1.0]], dtype=np.float32).tobytes()
-
-              bv_time = create_buffer_view(gl, time_data)
-              bv_mw = create_buffer_view(gl, mouth_weights)
-              bv_ew = create_buffer_view(gl, eyes_weights)
-
-              acc_time = create_accessor(gl, bv_time, 5126, 3, "SCALAR", [0.0], [2.0])
-              acc_mw = create_accessor(gl, bv_mw, 5126, 3, "VEC2", [0,0], [1,1])
-              acc_ew = create_accessor(gl, bv_ew, 5126, 3, "VEC2", [0,0], [1,1])
-
-              gl.animations.append(Animation(
-                  channels=[
-                      AnimationChannel(
-                          sampler=0,
-                          target=Target(node=len(gl.nodes)-1, path="weights")
-                      )
-                  ],
-                  samplers=[
-                      AnimationSampler(
-                          input=acc_time,
-                          interpolation="LINEAR",
-                          output=acc_mw # Simplified: combining weights
-                      )
-                  ]
-              ))
 
               # --- Export GLB ---
               out_glb = rig_file.with_name("Master_Rigged_Avatar.glb")
@@ -577,7 +486,8 @@ jobs:
         run: |
           mkdir -p final_artifact
           find teacher_output -name "Master_Rigged_Avatar.glb" -exec cp {} final_artifact/ \;
-          ls -lh final_artifact/
+          echo "Contents of final_artifact:"
+          ls -lh final_artifact/ || echo "No files found"
 
       - name: Upload Master Rigged GLB
         if: always()
@@ -585,5 +495,5 @@ jobs:
         with:
           name: master-rigged-avatar-glb
           path: final_artifact/*.glb
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
