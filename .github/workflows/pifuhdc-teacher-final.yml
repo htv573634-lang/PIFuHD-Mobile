@@ -9,7 +9,6 @@ jobs:
     timeout-minutes: 180
 
     steps:
-
       # ============================================================
       # CHECKOUT
       # ============================================================
@@ -35,15 +34,8 @@ jobs:
           sudo apt-get update
 
           sudo apt-get install -y \
-            git \
-            wget \
-            curl \
-            build-essential \
-            libgl1 \
-            libglib2.0-0 \
-            libsm6 \
-            libxext6 \
-            libxrender1
+            git wget curl build-essential \
+            libgl1 libglib2.0-0 libsm6 libxext6 libxrender1
 
       # ============================================================
       # PYTHON PACKAGES
@@ -63,64 +55,46 @@ jobs:
             matplotlib==3.7.5 \
             trimesh==3.23.5 \
             pygltflib \
-            gdown
-
-          pip install \
+            gdown \
             torch==2.1.2 \
             torchvision==0.16.2
 
       # ============================================================
-      # ENVIRONMENT
+      # VERIFY ENVIRONMENT
       # ============================================================
 
       - name: Verify environment
         run: |
           python - <<'PY'
-          import sys
           import torch
           import torchvision
-          import numpy
-          import scipy
-          import skimage
           import cv2
-          import PIL
-          import trimesh
-
-          print("Python:", sys.version)
-          print("PyTorch:", torch.__version__)
+          import numpy
+          print("Torch:", torch.__version__)
           print("Torchvision:", torchvision.__version__)
-          print("NumPy:", numpy.__version__)
-          print("SciPy:", scipy.__version__)
-          print("scikit-image:", skimage.__version__)
           print("OpenCV:", cv2.__version__)
-          print("Pillow:", PIL.__version__)
-          print("Trimesh:", trimesh.__version__)
+          print("NumPy:", numpy.__version__)
           print("CUDA:", torch.cuda.is_available())
           PY
 
       # ============================================================
-      # CLONE OFFICIAL PIFuHDC
+      # CLONE PIFuHDC
       # ============================================================
 
       - name: Clone PIFuHDC
         run: |
           rm -rf pifuhdc
-
-          git clone \
-            --depth 1 \
-            https://github.com/xiahongchi/PIFuHDC.git \
-            pifuhdc
-
-      # ============================================================
-      # CHECKPOINTS
-      # ============================================================
+          git clone --depth 1 https://github.com/xiahongchi/PIFuHDC.git pifuhdc
 
       - name: Prepare checkpoints
         working-directory: pifuhdc
-        run: |
-          mkdir -p checkpoints
+        run: mkdir -p checkpoints
 
-      - name: Restore PIFuHDC checkpoint cache
+      # ============================================================
+      # CACHE CHECKPOINTS
+      # ============================================================
+
+      - name: Restore checkpoint cache
         uses: actions/cache@v4
         with:
           path: pifuhdc/checkpoints
@@ -128,235 +102,132 @@ jobs:
           restore-keys: |
             pifuhdc-checkpoints-
 
-      - name: Download geometry checkpoint if needed
-        working-directory: pifuhdc
-        shell: bash
-        run: |
-          if [ -s checkpoints/pifuhd.pt ]; then
-            echo "Geometry checkpoint found in cache."
-          else
-            echo "Downloading PIFuHD geometry checkpoint..."
+      # ============================================================
+      # DOWNLOAD CHECKPOINTS
+      # ============================================================
 
-            wget \
-              --show-progress \
+      - name: Download geometry checkpoint
+        working-directory: pifuhdc
+        run: |
+          if [ ! -s checkpoints/pifuhd.pt ]; then
+            wget --show-progress \
               https://dl.fbaipublicfiles.com/pifuhd/checkpoints/pifuhd.pt \
               -O checkpoints/pifuhd.pt
           fi
 
-          test -s checkpoints/pifuhd.pt
-
-          ls -lh checkpoints/pifuhd.pt
-
-      - name: Download color checkpoint if needed
+      - name: Download color checkpoint
         working-directory: pifuhdc
-        shell: bash
         run: |
-          if [ -s checkpoints/net_C_HD.pt ]; then
-            echo "Color checkpoint found in cache."
-          else
-            echo "Downloading PIFuHDC color checkpoint..."
-
+          if [ ! -s checkpoints/net_C_HD.pt ]; then
             gdown \
               1jSOpwJKFJWHxkCEplhz0AUGacQBIS4AM \
               -O checkpoints/net_C_HD.pt
           fi
 
-          test -s checkpoints/net_C_HD.pt
-
-          ls -lh checkpoints/net_C_HD.pt
-
       # ============================================================
-      # PATCH PIFuHDC COLOR CHECKPOINT
+      # PATCH PIFuHDC
       # ============================================================
 
-      - name: Configure color checkpoint
+      - name: Patch PIFuHDC
         working-directory: pifuhdc
         run: |
           python - <<'PY'
           from pathlib import Path
 
-          path = Path("apps/recon.py")
+          recon = Path("apps/recon.py")
+          text = recon.read_text()
+          text = text.replace(
+              "checkpoints/net_C_choice2.pt",
+              "checkpoints/net_C_HD.pt"
+          )
+          recon.write_text(text)
 
-          text = path.read_text()
+          mesh = Path("lib/mesh_util.py")
+          text = mesh.read_text()
+          text = text.replace(
+              "measure.marching_cubes_lewiner",
+              "measure.marching_cubes"
+          )
+          mesh.write_text(text)
 
-          old = "checkpoints/net_C_choice2.pt"
-          new = "checkpoints/net_C_HD.pt"
-
-          if old in text:
-              text = text.replace(old, new)
-              path.write_text(text)
-              print("Color checkpoint path fixed.")
-          else:
-              print("Color checkpoint path already correct.")
+          print("PIFuHDC patched successfully.")
           PY
 
       # ============================================================
-      # PATCH MARCHING CUBES
+      # VERIFY IMPORTS
       # ============================================================
 
-      - name: Fix Marching Cubes API
-        working-directory: pifuhdc
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path("lib/mesh_util.py")
-
-          text = path.read_text()
-
-          old = "measure.marching_cubes_lewiner"
-          new = "measure.marching_cubes"
-
-          if old in text:
-              text = text.replace(old, new)
-              path.write_text(text)
-              print("Marching Cubes API fixed.")
-          else:
-              print("Marching Cubes API already fixed.")
-          PY
-
-      # ============================================================
-      # VERIFY PIFuHDC
-      # ============================================================
-
-      - name: Verify PIFuHDC modules
+      - name: Verify imports
         working-directory: pifuhdc
         run: |
           python - <<'PY'
           import sys
-
-          sys.path.insert(0, ".")
-
-          import lib
-          import lib.mesh_util
-          import lib.options
-          import apps
+          sys.path.insert(0,".")
           import apps.recon
-
-          print("PIFuHDC imports OK.")
+          import lib.mesh_util
+          print("Imports OK.")
           PY
 
       # ============================================================
-      # PREPARE USER DATASET
+      # PREPARE DATASET
       # ============================================================
 
-      - name: Prepare teacher dataset
-        shell: bash
+      - name: Prepare dataset
         run: |
-          rm -rf teacher_input
-          rm -rf teacher_output
-
-          mkdir -p teacher_input
-          mkdir -p teacher_output
+          rm -rf teacher_input teacher_output
+          mkdir -p teacher_input teacher_output
 
           mapfile -t INPUTS < <(
-            find dataset/input \
-              -type f \
-              \( \
-                -iname "*.jpg" \
-                -o -iname "*.jpeg" \
-                -o -iname "*.png" \
-              \) \
+            find dataset/input -type f \
+              \( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" \) \
               | sort
           )
 
           COUNT=${#INPUTS[@]}
 
-          echo "=========================================="
-          echo "TEACHER INPUT DATASET"
-          echo "=========================================="
           echo "Images found: $COUNT"
 
           if [ "$COUNT" -lt 1 ]; then
-            echo "ERROR: No input images found."
             exit 1
           fi
 
           if [ "$COUNT" -gt 2 ]; then
-            echo "ERROR: Final teacher test expects 1 or 2 images."
-            echo "Found: $COUNT"
+            echo "Use 1-2 photos."
             exit 1
           fi
 
           INDEX=1
 
-          for SOURCE in "${INPUTS[@]}"; do
+          for IMG in "${INPUTS[@]}"; do
 
-            OUTPUT="teacher_input/view_$(printf '%03d' "$INDEX").jpg"
+            OUT="teacher_input/view_$(printf '%03d' $INDEX).jpg"
 
-            echo ""
-            echo "Input:"
-            echo "$SOURCE"
-
-            python - "$SOURCE" "$OUTPUT" <<'PY'
+            python - "$IMG" "$OUT" <<'PY'
           import sys
           from PIL import Image
 
-          source = sys.argv[1]
-          output = sys.argv[2]
+          img=Image.open(sys.argv[1]).convert("RGB")
+          img.save(sys.argv[2],quality=100)
 
-          image = Image.open(source).convert("RGB")
+          w,h=img.size
 
-          print("Original size:", image.size)
-
-          image.save(
-              output,
-              format="JPEG",
-              quality=100
-          )
-
-          width, height = image.size
-
-          with open(
-              output.replace(".jpg", "_rect.txt"),
+          open(
+              sys.argv[2].replace(".jpg","_rect.txt"),
               "w"
-          ) as f:
-              f.write(
-                  f"0 0 {width} {height}\n"
-              )
-
-          print("Prepared:", output)
-          print("Width:", width)
-          print("Height:", height)
+          ).write(f"0 0 {w} {h}\n")
           PY
 
-            INDEX=$((INDEX + 1))
+            INDEX=$((INDEX+1))
           done
 
-          echo ""
-          echo "Prepared teacher inputs:"
-          find teacher_input \
-            -type f \
-            -printf "%p %s bytes\n" \
-            | sort
-
       # ============================================================
-      # REAL TEACHER INFERENCE
-      # ONE PIFuHDC RUN FOR ALL IMAGES
+      # RUN TEACHER
       # ============================================================
 
-      - name: Run PIFuHDC teacher at high resolution
+      - name: Run PIFuHDC
         working-directory: pifuhdc
-        shell: bash
         run: |
           set -o pipefail
-
-          echo "=========================================="
-          echo "FINAL PIFuHDC TEACHER TEST"
-          echo "=========================================="
-
-          echo "Input images:"
-          find ../teacher_input \
-            -maxdepth 1 \
-            -type f \
-            -iname "*.jpg" \
-            -print \
-            | sort
-
-          echo ""
-          echo "Resolution: 512"
-          echo "Mode: PIFuHDC Color HD"
-          echo ""
 
           python -m apps.test_colorHD \
             --input_path ../teacher_input \
@@ -367,679 +238,217 @@ jobs:
             --use_rect \
             2>&1 | tee ../teacher_output/pifuhdc.log
 
-          EXIT_CODE=${PIPESTATUS[0]}
-
-          echo ""
-          echo "PIFuHDC exit code: $EXIT_CODE"
-
-          echo ""
-          echo "Generated files:"
-
-          find ../teacher_output \
-            -type f \
-            -printf "%p %s bytes\n" \
-            | sort
-
-          if [ "$EXIT_CODE" -ne 0 ]; then
-            exit "$EXIT_CODE"
-          fi
-
       # ============================================================
-      # FIND OUTPUT MESHES
+      # FIXED MESH COLLECTION
       # ============================================================
 
-      - name: Collect teacher meshes
-        shell: bash
+      - name: Collect meshes
         run: |
+          set -e
+
           mkdir -p teacher_output/final
 
-          mapfile -t OBJS < <(
-            find teacher_output \
-              -type f \
-              -iname "*.obj" \
-              | sort
-          )
-
-          COUNT=${#OBJS[@]}
-
-          echo "OBJ files generated: $COUNT"
-
-          if [ "$COUNT" -lt 1 ]; then
-            echo "ERROR: PIFuHDC produced no OBJ."
-            exit 1
-          fi
+          rm -f teacher_output/final/*.obj
 
           INDEX=1
 
-          for OBJ in "${OBJS[@]}"; do
+          while IFS= read -r OBJ; do
 
-            DEST="teacher_output/final/view_$(printf '%03d' "$INDEX").obj"
+            DEST="teacher_output/final/view_$(printf '%03d' $INDEX).obj"
 
             cp "$OBJ" "$DEST"
 
-            echo "Copied:"
-            echo "$OBJ"
-            echo "→"
-            echo "$DEST"
+            echo "$OBJ -> $DEST"
 
-            INDEX=$((INDEX + 1))
-          done
+            INDEX=$((INDEX+1))
+
+          done < <(
+            find teacher_output \
+              -type f \
+              -iname "*.obj" \
+              ! -path "teacher_output/final/*" \
+              | sort
+          )
 
       # ============================================================
-      # HIGH-QUALITY COLOR-AWARE OBJ -> GLB
+      # OBJ -> GLB
       # ============================================================
 
-      - name: Convert colored OBJ to GLB
-        shell: bash
+      - name: Convert OBJ to GLB
         run: |
-          cat > convert_colored_obj.py <<'PY'
+          cat > convert_obj.py <<'PY'
           from pathlib import Path
-          import struct
           import json
-          import base64
+          import struct
 
+          def read_obj(path):
+              verts=[]
+              cols=[]
+              faces=[]
 
-          def read_colored_obj(path):
+              for line in open(path,"r",errors="ignore"):
 
-              vertices = []
-              colors = []
-              faces = []
+                  if line.startswith("v "):
 
-              with open(
-                  path,
-                  "r",
-                  errors="ignore"
-              ) as f:
+                      p=line.split()
 
-                  for line in f:
+                      verts.append([
+                          float(p[1]),
+                          float(p[2]),
+                          float(p[3])
+                      ])
 
-                      if line.startswith("v "):
+                      if len(p)>=7:
+                          rgb=list(map(float,p[4:7]))
+                          if max(rgb)<=1:
+                              rgb=[v*255 for v in rgb]
+                      else:
+                          rgb=[200,200,200]
 
-                          parts = line.split()
+                      cols.append([
+                          round(rgb[0]),
+                          round(rgb[1]),
+                          round(rgb[2]),
+                          255
+                      ])
 
-                          if len(parts) < 7:
-                              raise RuntimeError(
-                                  f"Vertex has no RGB color: {line}"
-                              )
+                  elif line.startswith("f "):
 
-                          vertices.append([
-                              float(parts[1]),
-                              float(parts[2]),
-                              float(parts[3])
+                      idx=[]
+
+                      for s in line.split()[1:]:
+                          i=int(s.split("/")[0])
+                          idx.append(i-1 if i>0 else len(verts)+i)
+
+                      for i in range(1,len(idx)-1):
+                          faces.append([
+                              idx[0],
+                              idx[i],
+                              idx[i+1]
                           ])
 
-                          r = float(parts[4])
-                          g = float(parts[5])
-                          b = float(parts[6])
+              return verts,cols,faces
 
-                          # PIFuHDC stores colors as floating
-                          # point RGB values.
-                          #
-                          # Support both:
-                          #   0..1
-                          # and
-                          #   0..255
+          def pack(v,c,f):
 
-                          if max(r, g, b) <= 1.0:
-                              r *= 255.0
-                              g *= 255.0
-                              b *= 255.0
+              pos=b''.join(struct.pack('<fff',*x) for x in v)
+              col=bytes(x for rgba in c for x in rgba)
+              ind=b''.join(struct.pack('<III',*x) for x in f)
 
-                          r = max(0, min(255, round(r)))
-                          g = max(0, min(255, round(g)))
-                          b = max(0, min(255, round(b)))
+              def pad(d):
+                  while len(d)%4:d+=b'\0'
+                  return d
 
-                          colors.append([
-                              r,
-                              g,
-                              b,
-                              255
-                          ])
+              pos=pad(pos)
+              col=pad(col)
+              ind=pad(ind)
 
-                      elif line.startswith("f "):
+              off1=0
+              off2=len(pos)
+              off3=off2+len(col)
 
-                          parts = line.split()[1:4]
+              bin=pos+col+ind
 
-                          indices = []
+              xs=[x[0] for x in v]
+              ys=[x[1] for x in v]
+              zs=[x[2] for x in v]
 
-                          for part in parts:
-
-                              # Supports:
-                              # 1
-                              # 1/2
-                              # 1/2/3
-
-                              vertex_index = int(
-                                  part.split("/")[0]
-                              )
-
-                              if vertex_index < 0:
-                                  vertex_index = (
-                                      len(vertices)
-                                      + vertex_index
-                                  )
-                              else:
-                                  vertex_index -= 1
-
-                              indices.append(
-                                  vertex_index
-                              )
-
-                          if len(indices) == 3:
-                              faces.append(indices)
-
-              if not vertices:
-                  raise RuntimeError(
-                      "OBJ contains no vertices."
-                  )
-
-              if not faces:
-                  raise RuntimeError(
-                      "OBJ contains no faces."
-                  )
-
-              if len(vertices) != len(colors):
-                  raise RuntimeError(
-                      "Vertex/color count mismatch."
-                  )
-
-              return vertices, colors, faces
-
-
-          def make_glb(obj_path, glb_path):
-
-              vertices, colors, faces = (
-                  read_colored_obj(obj_path)
-              )
-
-              print("Vertices:", len(vertices))
-              print("Faces:", len(faces))
-              print("Colors:", len(colors))
-
-              # --------------------------------------------------
-              # Binary buffers
-              # --------------------------------------------------
-
-              position_data = b"".join(
-                  struct.pack(
-                      "<fff",
-                      *v
-                  )
-                  for v in vertices
-              )
-
-              color_data = bytes(
-                  value
-                  for color in colors
-                  for value in color
-              )
-
-              index_data = b"".join(
-                  struct.pack(
-                      "<III",
-                      *face
-                  )
-                  for face in faces
-              )
-
-              def align4(data):
-                  while len(data) % 4 != 0:
-                      data += b"\x00"
-                  return data
-
-              position_data = align4(position_data)
-              color_data = align4(color_data)
-              index_data = align4(index_data)
-
-              position_offset = 0
-
-              color_offset = (
-                  len(position_data)
-              )
-
-              index_offset = (
-                  color_offset
-                  + len(color_data)
-              )
-
-              binary = (
-                  position_data
-                  + color_data
-                  + index_data
-              )
-
-              # --------------------------------------------------
-              # Bounds
-              # --------------------------------------------------
-
-              xs = [v[0] for v in vertices]
-              ys = [v[1] for v in vertices]
-              zs = [v[2] for v in vertices]
-
-              min_position = [
-                  min(xs),
-                  min(ys),
-                  min(zs)
-              ]
-
-              max_position = [
-                  max(xs),
-                  max(ys),
-                  max(zs)
-              ]
-
-              # --------------------------------------------------
-              # glTF
-              # --------------------------------------------------
-
-              gltf = {
-                  "asset": {
-                      "version": "2.0",
-                      "generator": "PIFuHDC Colored OBJ Converter"
-                  },
-
-                  "scene": 0,
-
-                  "scenes": [
-                      {
-                          "nodes": [0]
-                      }
+              gltf={
+                  "asset":{"version":"2.0"},
+                  "scene":0,
+                  "scenes":[{"nodes":[0]}],
+                  "nodes":[{"mesh":0}],
+                  "meshes":[{
+                      "primitives":[{
+                          "attributes":{"POSITION":0,"COLOR_0":1},
+                          "indices":2
+                      }]
+                  }],
+                  "accessors":[
+                      {"bufferView":0,"componentType":5126,"count":len(v),"type":"VEC3","min":[min(xs),min(ys),min(zs)],"max":[max(xs),max(ys),max(zs)]},
+                      {"bufferView":1,"componentType":5121,"normalized":True,"count":len(c),"type":"VEC4"},
+                      {"bufferView":2,"componentType":5125,"count":len(f)*3,"type":"SCALAR"}
                   ],
-
-                  "nodes": [
-                      {
-                          "mesh": 0,
-                          "name": obj_path.stem
-                      }
+                  "bufferViews":[
+                      {"buffer":0,"byteOffset":off1,"byteLength":len(pos),"target":34962},
+                      {"buffer":0,"byteOffset":off2,"byteLength":len(col),"target":34962},
+                      {"buffer":0,"byteOffset":off3,"byteLength":len(ind),"target":34963}
                   ],
-
-                  "meshes": [
-                      {
-                          "name": "PIFuHDC_Human",
-                          "primitives": [
-                              {
-                                  "attributes": {
-                                      "POSITION": 0,
-                                      "COLOR_0": 1
-                                  },
-                                  "indices": 2,
-                                  "mode": 4
-                              }
-                          ]
-                      }
-                  ],
-
-                  "accessors": [
-                      {
-                          "bufferView": 0,
-                          "componentType": 5126,
-                          "count": len(vertices),
-                          "type": "VEC3",
-                          "min": min_position,
-                          "max": max_position
-                      },
-
-                      {
-                          "bufferView": 1,
-                          "componentType": 5121,
-                          "normalized": True,
-                          "count": len(colors),
-                          "type": "VEC4"
-                      },
-
-                      {
-                          "bufferView": 2,
-                          "componentType": 5125,
-                          "count": len(faces) * 3,
-                          "type": "SCALAR",
-                          "min": [0],
-                          "max": [len(vertices) - 1]
-                      }
-                  ],
-
-                  "bufferViews": [
-                      {
-                          "buffer": 0,
-                          "byteOffset": position_offset,
-                          "byteLength": len(position_data),
-                          "target": 34962
-                      },
-
-                      {
-                          "buffer": 0,
-                          "byteOffset": color_offset,
-                          "byteLength": len(color_data),
-                          "target": 34962
-                      },
-
-                      {
-                          "buffer": 0,
-                          "byteOffset": index_offset,
-                          "byteLength": len(index_data),
-                          "target": 34963
-                      }
-                  ],
-
-                  "buffers": [
-                      {
-                          "byteLength": len(binary)
-                      }
-                  ]
+                  "buffers":[{"byteLength":len(bin)}]
               }
 
-              # --------------------------------------------------
-              # JSON padding
-              # --------------------------------------------------
+              js=json.dumps(gltf,separators=(",",":")).encode()
 
-              json_bytes = json.dumps(
-                  gltf,
-                  separators=(",", ":")
-              ).encode("utf-8")
+              while len(js)%4:js+=b' '
+              while len(bin)%4:bin+=b'\0'
 
-              while len(json_bytes) % 4 != 0:
-                  json_bytes += b" "
-
-              while len(binary) % 4 != 0:
-                  binary += b"\x00"
-
-              # --------------------------------------------------
-              # GLB
-              # --------------------------------------------------
-
-              total_length = (
-                  12
-                  + 8
-                  + len(json_bytes)
-                  + 8
-                  + len(binary)
+              return (
+                  struct.pack("<4sII",b"glTF",2,12+8+len(js)+8+len(bin))+
+                  struct.pack("<II",len(js),0x4E4F534A)+js+
+                  struct.pack("<II",len(bin),0x004E4942)+bin
               )
 
-              header = struct.pack(
-                  "<4sII",
-                  b"glTF",
-                  2,
-                  total_length
-              )
-
-              json_chunk_header = struct.pack(
-                  "<II",
-                  len(json_bytes),
-                  0x4E4F534A
-              )
-
-              bin_chunk_header = struct.pack(
-                  "<II",
-                  len(binary),
-                  0x004E4942
-              )
-
-              glb = (
-                  header
-                  + json_chunk_header
-                  + json_bytes
-                  + bin_chunk_header
-                  + binary
-              )
-
-              glb_path.write_bytes(glb)
-
-              print(
-                  "GLB created:",
-                  glb_path
-              )
-
-              print(
-                  "GLB size:",
-                  glb_path.stat().st_size,
-                  "bytes"
-              )
-
-
-          if __name__ == "__main__":
-
-              for obj in sorted(
-                  Path("teacher_output/final")
-                  .glob("*.obj")
-              ):
-
-                  glb = obj.with_suffix(".glb")
-
-                  print("")
-                  print(
-                      "=========================================="
-                  )
-                  print("Converting:", obj)
-                  print(
-                      "=========================================="
-                  )
-
-                  make_glb(
-                      obj,
-                      glb
-                  )
+          for obj in Path("teacher_output/final").glob("*.obj"):
+              v,c,f=read_obj(obj)
+              obj.with_suffix(".glb").write_bytes(pack(v,c,f))
+              print("Converted:",obj)
           PY
 
-          python convert_colored_obj.py
+          python convert_obj.py
 
       # ============================================================
-      # COLOR VALIDATION
+      # VALIDATE GLB
       # ============================================================
 
-      - name: Validate teacher colors
-        shell: bash
+      - name: Validate GLB
         run: |
           python - <<'PY'
           from pathlib import Path
-          import struct
-
-
-          for obj in sorted(
-              Path("teacher_output/final")
-              .glob("*.obj")
-          ):
-
-              vertices = 0
-              colored = 0
-
-              with obj.open(
-                  "r",
-                  errors="ignore"
-              ) as f:
-
-                  for line in f:
-
-                      if line.startswith("v "):
-
-                          vertices += 1
-
-                          if len(
-                              line.split()
-                          ) >= 7:
-                              colored += 1
-
-              print("")
-              print("File:", obj)
-              print("Vertices:", vertices)
-              print("Colored vertices:", colored)
-
-              if vertices == 0:
-                  raise SystemExit(
-                      "No vertices found."
-                  )
-
-              if colored != vertices:
-                  raise SystemExit(
-                      "Not every vertex contains RGB color."
-                  )
-
-          print("")
-          print("COLOR VALIDATION PASSED.")
-          PY
-
-      # ============================================================
-      # GLB VALIDATION
-      # ============================================================
-
-      - name: Validate GLB structure and COLOR_0
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import struct
           import json
+          import struct
 
+          for glb in Path("teacher_output/final").glob("*.glb"):
 
-          for glb in sorted(
-              Path("teacher_output/final")
-              .glob("*.glb")
-          ):
+              d=glb.read_bytes()
 
-              print("")
-              print("==========================================")
-              print("GLB VALIDATION")
-              print("==========================================")
+              assert d[:4]==b"glTF"
 
-              print("File:", glb)
-              print(
-                  "Size:",
-                  glb.stat().st_size,
-                  "bytes"
-              )
+              l=struct.unpack("<I",d[12:16])[0]
 
-              data = glb.read_bytes()
+              js=json.loads(d[20:20+l].decode())
 
-              magic, version, total_length = (
-                  struct.unpack(
-                      "<4sII",
-                      data[:12]
-                  )
-              )
+              attrs=js["meshes"][0]["primitives"][0]["attributes"]
 
-              if magic != b"glTF":
-                  raise SystemExit(
-                      "Invalid GLB magic."
-                  )
+              assert "POSITION" in attrs
+              assert "COLOR_0" in attrs
 
-              if version != 2:
-                  raise SystemExit(
-                      "Unsupported GLB version."
-                  )
-
-              offset = 12
-
-              json_length, json_type = (
-                  struct.unpack(
-                      "<II",
-                      data[offset:offset + 8]
-                  )
-              )
-
-              offset += 8
-
-              json_data = data[
-                  offset:
-                  offset + json_length
-              ]
-
-              gltf = json.loads(
-                  json_data.decode("utf-8")
-              )
-
-              print(
-                  "GLB version:",
-                  version
-              )
-
-              print(
-                  "Total length:",
-                  total_length
-              )
-
-              print(
-                  "Meshes:",
-                  len(gltf.get("meshes", []))
-              )
-
-              primitive = (
-                  gltf["meshes"][0]
-                  ["primitives"][0]
-              )
-
-              attributes = primitive[
-                  "attributes"
-              ]
-
-              print(
-                  "Attributes:",
-                  attributes
-              )
-
-              if "POSITION" not in attributes:
-                  raise SystemExit(
-                      "POSITION missing."
-                  )
-
-              if "COLOR_0" not in attributes:
-                  raise SystemExit(
-                      "COLOR_0 missing."
-                  )
-
-              print(
-                  "COLOR_0: PRESENT"
-              )
-
-              print("")
-              print(
-                  "GLB COLOR VALIDATION PASSED."
-              )
+              print(glb.name,"OK")
           PY
 
       # ============================================================
-      # FINAL REPORT
+      # REPORT
       # ============================================================
 
-      - name: Create final teacher report
+      - name: Final report
         if: always()
-        shell: bash
         run: |
           {
-            echo "PIFuHDC FINAL TEACHER TEST"
-            echo "=========================="
+            echo "PIFuHDC FINAL TEACHER"
             echo
-            echo "Teacher: PIFuHDC"
-            echo "Resolution: 512"
+            echo "Input:"
+            find teacher_input -type f | sort
             echo
-            echo "Input images:"
-            find teacher_input \
-              -type f \
-              -iname "*.jpg" \
-              -printf "%p %s bytes\n" \
-              | sort
-            echo
-            echo "Final outputs:"
-            find teacher_output/final \
-              -type f \
-              -printf "%p %s bytes\n" \
-              | sort
-            echo
-            echo "Color pipeline:"
-            echo "PIFuHDC colored OBJ"
-            echo "        ↓"
-            echo "Explicit RGB extraction"
-            echo "        ↓"
-            echo "GLB COLOR_0"
-            echo
-            echo "This output is intended as the"
-            echo "teacher reference for later distillation."
+            echo "Output:"
+            find teacher_output/final -type f | sort
           } > teacher_output/final_teacher_report.txt
 
           cat teacher_output/final_teacher_report.txt
 
       # ============================================================
-      # DOWNLOADABLE ARTIFACT
+      # ARTIFACT
       # ============================================================
 
-      - name: Upload final teacher results
+      - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -1047,5 +456,4 @@ jobs:
           path: |
             teacher_input/
             teacher_output/
-          if-no-files-found: warn
           retention-days: 14
