@@ -1,4 +1,4 @@
-Name: PIFuHDC Master Rigged Avatar Pipeline (CPU Optimized)
+name: PIFuHDC Master Rigged Avatar Pipeline (CPU Optimized)
 
 on:
   workflow_dispatch:
